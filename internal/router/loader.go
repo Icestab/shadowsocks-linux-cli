@@ -14,8 +14,29 @@ import (
 // (requirement 七: rules live outside the program, never hardcoded).
 const RulesDirName = "rules"
 
-// RulesDir returns the rule files directory for the given config dir.
+// RulesDir returns the user rule files directory for the given config dir.
 func RulesDir(configDir string) string { return filepath.Join(configDir, RulesDirName) }
+
+// SystemRulesDir is the system-wide rule location written by system-level
+// installs. Per-file lookup falls back to it; a variable so tests can
+// point it elsewhere.
+var SystemRulesDir = "/etc/sscli/rules"
+
+// findRuleFile resolves a rule file name: user directory first, then the
+// system-wide directory. Returns "" when the file exists nowhere.
+func findRuleFile(name string) string {
+	if dir, err := config.DefaultDir(); err == nil {
+		p := filepath.Join(RulesDir(dir), name)
+		if fileExists(p) {
+			return p
+		}
+	}
+	p := filepath.Join(SystemRulesDir, name)
+	if fileExists(p) {
+		return p
+	}
+	return ""
+}
 
 // RuleFileNames maps logical lists to on-disk file names.
 var RuleFileNames = struct {
@@ -71,34 +92,28 @@ func LoadEngine(cfg *config.Config) (*rules.Engine, error) {
 	}
 	engine.SetCustom(custom)
 
-	dir := ""
-	if d, err := config.DefaultDir(); err == nil {
-		dir = d
-	}
-	rdir := RulesDir(dir)
-
-	if f := filepath.Join(rdir, RuleFileNames.GFW); fileExists(f) {
+	if f := findRuleFile(RuleFileNames.GFW); f != "" {
 		set, err := rules.LoadGFWListFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", f, err)
 		}
 		engine.GFWList().Merge(set)
 	}
-	if f := filepath.Join(rdir, RuleFileNames.ChinaDomain); fileExists(f) {
+	if f := findRuleFile(RuleFileNames.ChinaDomain); f != "" {
 		set, err := rules.LoadDomainListFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", f, err)
 		}
 		engine.ChinaDomains().Merge(set)
 	}
-	if f := filepath.Join(rdir, RuleFileNames.ChinaIPv4); fileExists(f) {
+	if f := findRuleFile(RuleFileNames.ChinaIPv4); f != "" {
 		set, err := rules.LoadCIDRListFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", f, err)
 		}
 		engine.ChinaIP().MergeV4(set)
 	}
-	if f := filepath.Join(rdir, RuleFileNames.Custom); fileExists(f) {
+	if f := findRuleFile(RuleFileNames.Custom); f != "" {
 		rs, err := rules.LoadCustomListFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", f, err)
