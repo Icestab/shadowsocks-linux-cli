@@ -55,6 +55,12 @@ func packForWrite(pkt []byte) ([]byte, int) {
 	return buf, virtioNetHdrLen
 }
 
+// maxConcurrentFlows bounds the number of simultaneously routed flows.
+// Without a cap, the gvisor forwarder accepts an unbounded number of
+// connections from local processes, letting any single app exhaust the
+// daemon's memory/fds/goroutines (local DoS).
+const maxConcurrentFlows = 4096
+
 // Stack bridges the TUN device into a gvisor userspace TCP/IP stack and
 // forwards each flow through the router.
 type Stack struct {
@@ -64,6 +70,10 @@ type Stack struct {
 	router  FlowRouter
 	dnsPort uint16 // UDP packets to this port go to the DNS handler
 	nicID   tcpip.NICID
+
+	// flowSlots is the admission-control semaphore: one slot per active
+	// flow, acquired on accept and released when the flow ends.
+	flowSlots chan struct{}
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -90,11 +100,12 @@ type Conn interface {
 func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Stack{
-		dev:     dev,
-		router:  router,
-		dnsPort: 53,
-		nicID:   1,
-		cancel:  cancel,
+		dev:       dev,
+		router:    router,
+		dnsPort:   53,
+		nicID:     1,
+		flowSlots: make(chan struct{}, maxConcurrentFlows),
+		cancel:    cancel,
 	}
 
 	const defaultMTU = 1500

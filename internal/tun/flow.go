@@ -17,6 +17,20 @@ import (
 // endpoint (completing the kernel-side handshake through our stack), dials
 // the real destination through the router, and pipes both sides.
 func (s *Stack) handleTCP(ctx context.Context, r *tcp.ForwarderRequest) {
+	// Admission control: refuse with RST once the concurrent-flow budget is
+	// exhausted (see maxConcurrentFlows). Non-blocking on purpose — a full
+	// budget rejects new flows immediately instead of piling up waiters.
+	// NOTE: Complete(true) is required for the refusal to reach the app —
+	// Complete(false) merely releases the request (the SYN would otherwise
+	// retransmit until the app gives up).
+	select {
+	case s.flowSlots <- struct{}{}:
+		defer func() { <-s.flowSlots }()
+	default:
+		r.Complete(true)
+		return
+	}
+
 	id := r.ID()
 	dst := netAddr(id.LocalAddress, id.LocalPort)
 
