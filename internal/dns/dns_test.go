@@ -110,6 +110,77 @@ func TestResolverSplitRouting(t *testing.T) {
 	}
 }
 
+// TestServerServesTCP verifies the DNS listener answers TCP queries too:
+// the hijack rules redirect local TCP :53 into the same port, so serving
+// only UDP would refuse every TCP DNS query.
+func TestServerServesTCP(t *testing.T) {
+	// Fake domestic upstream (UDP) so the resolver never touches the network.
+	upstream := mdns.NewServeMux()
+	upstream.HandleFunc("origin.test.", func(w mdns.ResponseWriter, r *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(r)
+		resp.Answer = append(resp.Answer, &mdns.A{
+			Hdr: mdns.RR_Header{Name: r.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 120},
+			A:   net.IP{93, 184, 216, 34},
+		})
+		_ = w.WriteMsg(resp)
+	})
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
+	defer upSrv.Shutdown()
+	go func() { _ = upSrv.ActivateAndServe() }()
+
+	china := rules.NewDomainSet()
+	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	srv := NewServer(resolver, nil)
+
+	// Reserve a free TCP port for the sscli listener.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ListenAndServe(ctx, addr) }()
+
+	// Wait for the TCP listener to come up.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			c.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sscli TCP DNS listener %s did not come up: %v", addr, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	c := &mdns.Client{Net: "tcp", Timeout: 5 * time.Second}
+	q := new(mdns.Msg)
+	q.SetQuestion("www.origin.test.", mdns.TypeA)
+	resp, _, err := c.Exchange(q, addr)
+	if err != nil {
+		t.Fatalf("TCP DNS exchange: %v", err)
+	}
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("rcode = %d", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answers = %d, want 1", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*mdns.A)
+	if !ok || a.A.String() != "93.184.216.34" {
+		t.Fatalf("answer = %v, want A 93.184.216.34", resp.Answer[0])
+	}
+}
 // TestForeignQueriesViaProxyDial verifies that when a proxy dialer is
 // installed, foreign upstream queries are exchanged over TCP through that
 // dialer instead of plaintext UDP from the local machine.

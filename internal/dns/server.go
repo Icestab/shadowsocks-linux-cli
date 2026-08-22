@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 
 	mdns "github.com/miekg/dns"
 
@@ -68,8 +70,37 @@ func (s *Server) HandleMsg(ctx context.Context, req *mdns.Msg) *mdns.Msg {
 	return resp
 }
 
-// ListenAndServe runs a UDP DNS server at addr until ctx is cancelled.
+// ListenAndServe runs UDP and TCP DNS servers at addr until ctx is
+// cancelled. Both transports must be served: the DNS hijack redirects
+// locally generated queries of either kind (nat OUTPUT :53 -> addr into
+// 53090), and a UDP-only listener would leave TCP DNS querying an unserved
+// port, failing every query that lands there.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, netw := range []string{"udp", "tcp"} {
+		wg.Add(1)
+		go func(netw string) {
+			defer wg.Done()
+			if err := s.listenOne(ctx, addr, netw); err != nil && ctx.Err() == nil {
+				errCh <- err
+			}
+		}(netw)
+	}
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+	var firstErr error
+	for err := range errCh {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *Server) listenOne(ctx context.Context, addr, netw string) error {
 	mux := mdns.NewServeMux()
 	mux.HandleFunc(".", func(w mdns.ResponseWriter, r *mdns.Msg) {
 		resp := s.HandleMsg(ctx, r)
@@ -77,13 +108,20 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			_ = w.WriteMsg(resp)
 		}
 	})
-	srv := &mdns.Server{Addr: addr, Net: "udp", Handler: mux}
+	srv := &mdns.Server{
+		Addr:         addr,
+		Net:          netw,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		IdleTimeout:  func() time.Duration { return 30 * time.Second }, // TCP idle only
+	}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown()
 	}()
 	if err := srv.ListenAndServe(); err != nil {
-		return fmt.Errorf("dns server %s: %w", addr, err)
+		return fmt.Errorf("dns server [%s] %s: %w", netw, addr, err)
 	}
 	return nil
 }
