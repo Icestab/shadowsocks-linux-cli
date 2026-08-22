@@ -12,7 +12,8 @@ func TestFindRuleFileUserDirWins(t *testing.T) {
 	SystemRulesDir = filepath.Join(t.TempDir(), "etc-rules")
 	defer func() { SystemRulesDir = old }()
 
-	userFile := filepath.Join(userRoot, "rules", "gfw.list")
+	t.Setenv("HOME", userRoot) // 让 config.DefaultDir() 指向用户临时目录
+	userFile := filepath.Join(userRoot, ".config", "sscli", "rules", "gfw.list")
 	os.MkdirAll(filepath.Dir(userFile), 0o755)
 	os.WriteFile(userFile, []byte("user-copy"), 0o644)
 
