@@ -13,7 +13,15 @@
 #   5. 下载分流规则
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 兼容两种布局：
+#   源码树:   <root>/scripts/install.sh  -> PROJECT_ROOT=<root>
+#   发布包:   <pkg>/install.sh          -> PROJECT_ROOT=<pkg>（sscli 就在旁边）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/sscli" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"        # 发布包布局
+else
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"  # 源码树布局
+fi
 PREFIX=${PREFIX:-/usr/local}
 ETC=/etc/sscli
 LIB=/var/lib/sscli
@@ -24,16 +32,24 @@ case "$ARCH" in
     *) echo "不支持的架构: $ARCH"; exit 1 ;;
 esac
 
-USE_SUDO="sudo"
+USE_SUDO="${SUDO-sudo}"
 if [ "$(id -u)" -eq 0 ]; then USE_SUDO=""; fi
 
 step() { echo; echo "==> $1"; }
 
-step "1/6 构建 sscli"
-cd "$PROJECT_ROOT"
-. scripts/env.sh
-go build -trimpath -ldflags "-s -w" -o bin/sscli ./cmd/sscli
-echo "    bin/sscli 构建完成"
+# 发布包场景：sscli 二进制就在脚本旁边，直接使用；源码树场景：现场构建。
+if [ -x "$PROJECT_ROOT/sscli" ]; then
+    SSCLI_SRC="$PROJECT_ROOT/sscli"
+    step "1/6 使用发布包内的 sscli"
+    echo "    $SSCLI_SRC"
+else
+    step "1/6 构建 sscli"
+    cd "$PROJECT_ROOT"
+    . scripts/env.sh
+    go build -trimpath -ldflags "-s -w" -o bin/sscli ./cmd/sscli
+    SSCLI_SRC="bin/sscli"
+    echo "    bin/sscli 构建完成"
+fi
 
 step "2/6 准备 sslocal"
 CACHED="$PROJECT_ROOT/.toolchain/ss-rust/sslocal"
@@ -64,7 +80,7 @@ else
 fi
 
 step "3/6 安装文件到 $PREFIX"
-$USE_SUDO install -Dm755 bin/sscli "$PREFIX/bin/sscli"
+$USE_SUDO install -Dm755 "$SSCLI_SRC" "$PREFIX/bin/sscli"
 $USE_SUDO install -Dm755 "$SSLOCAL_SRC" "$PREFIX/bin/sslocal"
 
 step "4/6 生成配置"
@@ -74,7 +90,7 @@ if [ "$USE_SUDO" = "sudo" ]; then
     $USE_SUDO mkdir -p "$ETC/rules" "$LIB"
     if [ ! -f "$CONF_DST" ]; then
         if [ ! -f "$CONF_SRC" ]; then
-            "$PROJECT_ROOT/bin/sscli" config init
+            "$SSCLI_SRC" config init
         else
             echo "    复用现有 ~/.config/sscli/config.yaml 作为模板"
         fi
@@ -88,15 +104,15 @@ if [ "$USE_SUDO" = "sudo" ]; then
     fi
 else
     CONF_DST="$HOME/.config/sscli/config.yaml"
-    [ -f "$CONF_DST" ] || "$PROJECT_ROOT/bin/sscli" config init
+    [ -f "$CONF_DST" ] || "$SSCLI_SRC" config init
     echo "    配置: $CONF_DST"
 fi
 
 step "5/6 下载分流规则"
-"$PROJECT_ROOT/bin/sscli" --config "$CONF_DST" update
+"$SSCLI_SRC" --config "$CONF_DST" update
 
 step "6/6 自检"
-"$PROJECT_ROOT/bin/sscli" --config "$CONF_DST" test || true
+"$SSCLI_SRC" --config "$CONF_DST" test || true
 
 cat <<EOF
 

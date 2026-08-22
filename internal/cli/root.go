@@ -16,9 +16,10 @@ var (
 	debug   bool
 )
 
-func NewRootCmd() *cobra.Command {
+func NewRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "sscli",
+		Use:     "sscli",
+		Version: version,
 		Short: "Native Linux Shadowsocks TUN routing client",
 		Long: `sscli takes over system traffic through a Linux TUN device and routes it
 DIRECT or through a Shadowsocks proxy according to GFW List, China domain/IP
@@ -50,8 +51,8 @@ subprocess; sscli never re-implements the protocol.`,
 }
 
 // Execute runs the root command; errors are printed once here.
-func Execute() error {
-	cmd := NewRootCmd()
+func Execute(version string) error {
+	cmd := NewRootCmd(version)
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return err

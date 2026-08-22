@@ -30,7 +30,17 @@ Linux / WSL
 
 ## 安装
 
-### 一键安装（推荐）
+### 方式一：下载发布包（推荐，无需 Go 环境）
+
+从 [GitHub Releases](https://github.com/Icestab/shadowsocks-linux-cli/releases) 下载对应架构的 `sscli-v<版本>-linux-<架构>.tar.xz`（附 `.sha256` 校验文件）：
+
+```bash
+tar xJf sscli-v0.1.0-linux-x86_64.tar.xz
+cd sscli-v0.1.0-linux-x86_64
+sudo ./install.sh     # 自动装 sslocal(校验哈希) + 配置模板 + 下载规则
+```
+
+### 方式二：源码一键安装
 
 ```bash
 ./scripts/install.sh

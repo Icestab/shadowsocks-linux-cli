@@ -8,3 +8,4 @@
 *.pid
 *.test
 coverage.out
+/dist/

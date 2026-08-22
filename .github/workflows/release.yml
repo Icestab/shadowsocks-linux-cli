@@ -1,0 +1,41 @@
+name: Release
+
+# 推送 v* 标签时自动构建多架构发布包并附加到 GitHub Release。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            pkg_arch: x86_64
+          - goarch: arm64
+            pkg_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Package
+        run: ./scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.pkg_arch }}"
+
+      - name: Smoke test (binary runs)
+        run: |
+          ./dist/sscli-*-linux-${{ matrix.pkg_arch }}/sscli --help >/dev/null
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.xz
+            dist/*.tar.xz.sha256
