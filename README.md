@@ -1,5 +1,7 @@
 # sscli — Linux 原生 CLI Shadowsocks 分流客户端
 
+中文 | [English](README_EN.md)
+
 一个轻量、原生 Linux、无 GUI 的 Shadowsocks 分流工具。通过 Linux TUN 接管系统流量，根据 GFW List、中国域名/中国 IP 列表、局域网规则进行 DIRECT / PROXY 分流。
 
 ```text
