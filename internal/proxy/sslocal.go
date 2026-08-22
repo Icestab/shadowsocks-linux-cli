@@ -59,6 +59,17 @@ type sslocalConfig struct {
 // itself: a bootstrap deadlock that blackholes all traffic.
 var StartIP string
 
+// sslocalDropUID/GID: the sslocal child runs with least privilege — it
+// only binds a loopback SOCKS port and dials outbound, so uid/gid 65534
+// ("nobody" on standard Linux) is all it needs. A compromise of the child
+// then cannot touch root-owned state. The privilege drop and config chown
+// only apply when we ourselves run as root (tests spawn sslocal
+// unprivileged and must keep their own ownership).
+const (
+	sslocalDropUID = 65534
+	sslocalDropGID = 65534
+)
+
 // Start writes the temp config, spawns sslocal and waits until its SOCKS5
 // port accepts connections.
 func (s *Sslocal) Start() error {
@@ -121,6 +132,15 @@ func (s *Sslocal) Start() error {
 		return err
 	}
 	tmp.Close()
+	// The child reads this file as an unprivileged user: hand it over so
+	// the drop still leaves the password reachable. Fail loud — without
+	// this the child could never start.
+	if os.Geteuid() == 0 {
+		if err := os.Chown(s.cfgFile, sslocalDropUID, sslocalDropGID); err != nil {
+			s.cleanup()
+			return fmt.Errorf("chown sslocal config to uid %d: %w", sslocalDropUID, err)
+		}
+	}
 
 	args := []string{"-c", s.cfgFile, "-v"} // -v: sslocal 运行日志（含每次连接决策）
 	cmd := exec.Command(bin, args...)
@@ -134,8 +154,15 @@ func (s *Sslocal) Start() error {
 	}
 
 	// Detach from this process group so Ctrl-C on interactive use doesn't
-	// kill sslocal before we can clean up routes ourselves.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// kill sslocal before we can clean up routes ourselves, and drop to an
+	// unprivileged user (least privilege; see sslocalDropUID). Note: the
+	// log fd is opened and inherited by us, so the child can write it even
+	// though the file itself stays root-owned.
+	spa := &syscall.SysProcAttr{Setpgid: true}
+	if os.Geteuid() == 0 {
+		spa.Credential = &syscall.Credential{Uid: sslocalDropUID, Gid: sslocalDropGID}
+	}
+	cmd.SysProcAttr = spa
 
 	if err := cmd.Start(); err != nil {
 		s.cleanup()
