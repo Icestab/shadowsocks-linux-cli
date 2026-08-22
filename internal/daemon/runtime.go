@@ -140,6 +140,9 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	}
 
 	// 3. Managed sslocal (Shadowsocks protocol — prebuilt binary).
+	if d, err := StateDir(); err == nil {
+		os.Setenv("SSCLI_SSLOCAL_LOG", filepath.Join(d, "sslocal.log"))
+	}
 	// Pin the resolved IP so sslocal never needs DNS for the VPS name:
 	// once the hijack is active that resolution would route back through
 	// sslocal itself and deadlock the whole data plane.

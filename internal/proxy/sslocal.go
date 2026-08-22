@@ -122,9 +122,16 @@ func (s *Sslocal) Start() error {
 	}
 	tmp.Close()
 
-	cmd := exec.Command(bin, "-c", s.cfgFile)
+	args := []string{"-c", s.cfgFile, "-v"} // -v: sslocal 运行日志（含每次连接决策）
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	// 日志落盘（StateDir 由 daemon 保证已创建；失败则静默丢弃）。
+	if logPath := os.Getenv("SSCLI_SSLOCAL_LOG"); logPath != "" {
+		if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			cmd.Stderr = lf
+			cmd.Stdout = lf
+		}
+	}
 
 	// Detach from this process group so Ctrl-C on interactive use doesn't
 	// kill sslocal before we can clean up routes ourselves.
