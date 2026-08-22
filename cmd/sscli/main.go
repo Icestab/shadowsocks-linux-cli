@@ -8,7 +8,7 @@ import (
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "v0.2.1"
+var version = "v0.2.2"
 
 func main() {
 	if err := cli.Execute(version); err != nil {
