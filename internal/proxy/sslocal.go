@@ -52,6 +52,13 @@ type sslocalConfig struct {
 	TCPRelayOnly bool   `json:"-"`
 }
 
+// StartIP is set by the daemon to the server address resolved BEFORE any
+// routing/DNS changes. When present it replaces the configured domain in
+// sslocal's temp config — otherwise sslocal would resolve the domain via
+// DNS, which (once our hijack is active) flows back through sslocal
+// itself: a bootstrap deadlock that blackholes all traffic.
+var StartIP string
+
 // Start writes the temp config, spawns sslocal and waits until its SOCKS5
 // port accepts connections.
 func (s *Sslocal) Start() error {
@@ -80,10 +87,14 @@ func (s *Sslocal) Start() error {
 		host = "127.0.0.1"
 	}
 
+	serverAddr := s.cfg.Server.Address
+	if StartIP != "" {
+		serverAddr = StartIP
+	}
 	lc := sslocalConfig{
 		LocalAddress: host,
 		LocalPort:    port,
-		Server:       s.cfg.Server.Address,
+		Server:       serverAddr,
 		ServerPort:   s.cfg.Server.Port,
 		Password:     s.cfg.Server.Password,
 		Method:       s.cfg.Server.Method,

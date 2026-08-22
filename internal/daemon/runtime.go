@@ -140,6 +140,10 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	}
 
 	// 3. Managed sslocal (Shadowsocks protocol — prebuilt binary).
+	// Pin the resolved IP so sslocal never needs DNS for the VPS name:
+	// once the hijack is active that resolution would route back through
+	// sslocal itself and deadlock the whole data plane.
+	proxy.StartIP = serverIP.String()
 	rt.sslocal = proxy.NewSslocal(cfg)
 	if err := rt.sslocal.Start(); err != nil {
 		return rt, err
