@@ -192,7 +192,7 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	dnsSrv := dns.NewServer(resolver, engine)
 
 	dd := &proxy.DirectDialer{}
-	r := router.New(engine, mapping, pd, dd)
+	r := router.New(engine, mapping, pd, dd, serverIP)
 
 	// 8. gvisor userspace stack bridging the TUN into the router.
 	st, err := tun.NewStack(rt.dev, router.NewFlowAdapter(r, dnsSrv))
