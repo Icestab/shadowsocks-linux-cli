@@ -53,6 +53,19 @@ else
     bad "baidu.com NOT reachable — DIRECT path broken"
 fi
 
+step "dns hijack regression (start->stop x2)"
+# 要求：stop 后 DNS 必须恢复，且 iptables nat OUTPUT 恢复到启动前状态。
+NAT_BEFORE=$(iptables -t nat -S OUTPUT 2>/dev/null | sort)
+for round in 1 2; do
+    "$SSCLI" start >/dev/null 2>&1 && ok "start#$round"
+    if nslookup qq.com >/dev/null 2>&1; then ok "DNS works (running #$round)"; else bad "DNS broken while running #$round"; fi
+    "$SSCLI" stop >/dev/null 2>&1
+    sleep 1
+    if nslookup qq.com >/dev/null 2>&1; then ok "DNS restored (stopped #$round)"; else bad "DNS STILL BROKEN after stop #$round"; fi
+done
+NAT_AFTER=$(iptables -t nat -S OUTPUT 2>/dev/null | sort)
+if [ "$NAT_BEFORE" = "$NAT_AFTER" ]; then ok "nat OUTPUT restored byte-for-byte"; else bad "nat OUTPUT differs from pre-start state"; diff <(echo "$NAT_BEFORE") <(echo "$NAT_AFTER") | head -5; fi
+
 step "stop and restore"
 "$SSCLI" stop && ok "sscli stopped" || bad "stop failed"
 sleep 1

@@ -37,7 +37,19 @@ type Runtime struct {
 	nm      *network.Manager
 	cancel  context.CancelFunc
 
+	dnsDone <-chan struct{} // closed when the internal DNS listener exited
+
 	forceCh chan os.Signal // second signal triggers forced exit
+}
+
+// hijackStatePath is where the DNS-hijack rule delta is recorded so stop
+// (and crash recovery) removes exactly the rules we created.
+func hijackStatePath() (string, error) {
+	d, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, network.HijackStateFileName), nil
 }
 
 const daemonEnv = "SSCLI_DAEMON"
@@ -92,7 +104,9 @@ func Start(loadCfg func() (*config.Config, error), foreground bool) error {
 		go func() {
 			<-rt.forceCh
 			fmt.Println("second signal: forcing exit with fast network sweep")
-			network.TeardownDNSHijack()                                             //nolint:errcheck
+			if hp, he := hijackStatePath(); he == nil {
+				network.TeardownDNSHijack(hp) //nolint:errcheck
+			}
 			network.NewManager(cfg.TUN.Name, proxy.Fwmark, routingTable).Teardown() //nolint:errcheck
 			network.DeleteLink(cfg.TUN.Name)                                        //nolint:errcheck
 			removePid()
@@ -148,7 +162,11 @@ func boot(cfg *config.Config) (*Runtime, error) {
 		return rt, err
 	}
 	if cfg.DNS.Enabled {
-		if err := network.SetupDNSHijack(); err != nil {
+		hijackState, hsErr := hijackStatePath()
+		if hsErr != nil {
+			return rt, fmt.Errorf("resolve hijack state path: %w", hsErr)
+		}
+		if err := network.SetupDNSHijack(hijackState); err != nil {
 			return rt, err
 		}
 	}
@@ -179,8 +197,14 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	}
 	rt.stack = st
 
-	_ = ctx // pumps own their lifetimes; ctx cancellation happens in shutdown
-	go dnsSrv.ListenAndServe(ctx, dnsListener)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := dnsSrv.ListenAndServe(ctx, dnsListener); err != nil && ctx.Err() == nil {
+			fmt.Printf("warning: dns listener: %v\n", err)
+		}
+	}()
+	rt.dnsDone = done
 	return rt, nil
 }
 
@@ -190,7 +214,8 @@ func Stop() error {
 	running, pid := isRunning()
 	if !running {
 		// Sweep leftovers from a crashed previous run (idempotent).
-		network.TeardownDNSHijack() //nolint:errcheck // best-effort sweep
+		hijackState, _ := hijackStatePath()
+		network.TeardownDNSHijack(hijackState) //nolint:errcheck // best-effort sweep
 		nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
 		err := nm.Teardown()
 		network.DeleteLink(defaultTunName()) //nolint:errcheck // may not exist
@@ -222,7 +247,10 @@ func Stop() error {
 			break
 		}
 	}
-	network.TeardownDNSHijack() //nolint:errcheck // victim cannot clean up itself
+	hijackState, hsErr := hijackStatePath()
+	if hsErr == nil {
+		network.TeardownDNSHijack(hijackState) //nolint:errcheck // victim cannot clean up itself
+	}
 	nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
 	_ = nm.Teardown()
 	network.DeleteLink(defaultTunName()) //nolint:errcheck
@@ -329,7 +357,15 @@ func shutdown(rt *Runtime) {
 	if rt.stack != nil {
 		rt.stack.Close()
 	}
-	network.TeardownDNSHijack() //nolint:errcheck // best-effort sweep
+	// 要求 6：DNS 监听器必须先于规则移除关闭——等待其退出（限时）。
+	if rt.dnsDone != nil {
+		select {
+		case <-rt.dnsDone:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	hijackState, _ := hijackStatePath()
+	network.TeardownDNSHijack(hijackState) //nolint:errcheck // best-effort sweep
 	if rt.nm != nil {
 		_ = rt.nm.Teardown()
 	} else {

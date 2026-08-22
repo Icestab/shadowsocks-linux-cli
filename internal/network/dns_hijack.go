@@ -2,7 +2,9 @@ package network
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -10,85 +12,177 @@ import (
 // (daemon.dnsListener). Locally generated DNS queries are REDIRECTed here
 // so every lookup flows through sscli's resolver — this fills the
 // domain→IP mapping the router needs for domain-based decisions
-// (requirement 十六). Without it, system resolvers on private addresses
-// bypass the TUN entirely and the mapping stays empty.
+// (requirement 十六).
 const DNSHijackPort = 53090
 
-// fwmarkValue mirrors proxy.Fwmark (kept separate to avoid an import
-// cycle): our own resolver's upstream sockets carry this mark and must be
-// exempted from the redirect to prevent a self-loop.
-const fwmarkValue = 0x162
+// FwmarkString mirrors proxy.Fwmark as an iptables literal.
+const FwmarkString = "0x162"
 
-// dnsHijackRules returns the iptables invocations in insertion order.
-// Order matters: exempt marked sockets first, then redirect port 53.
-func dnsHijackRules() [][]string {
-	return [][]string{
-		{"-t", "nat", "-I", "OUTPUT", "1", "-m", "mark", "--mark", fmt.Sprint(fwmarkValue), "-j", "RETURN"},
-		{"-t", "nat", "-I", "OUTPUT", "2", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(DNSHijackPort)},
-		{"-t", "nat", "-I", "OUTPUT", "3", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(DNSHijackPort)},
-	}
-}
+// HijackStateFileName is appended to the state directory; it records the exact
+// rules this process inserted so teardown can remove precisely those —
+// never a user's pre-existing rules.
+var HijackStateFileName = "dns-hijack.rules"
 
-// dnsHijackDelete converts an insert invocation into its delete form:
-// "-I CHAIN POS ..." becomes "-D CHAIN ...".
-func dnsHijackDelete(insert []string) []string {
-	out := make([]string, 0, len(insert))
-	for i, a := range insert {
-		if i == 4 { // the position argument of -I
-			continue
-		}
-		if i == 3 {
-			out = append(out, "-D")
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
-func haveIPTables() bool {
+// firewallBackend resolves once per call site: only the iptables-compatible
+// interface is used (plain iptables or iptables-nft). Native `nft` is
+// deliberately NOT mixed in — touching both backends independently risks
+// corrupting the shared nftables view. Environments with neither get no
+// DNS hijack at all (domain rules degrade to IP-only matching).
+func firewallBackend() (string, bool) {
 	for _, c := range []string{"iptables", "iptables-nft"} {
-		if _, err := exec.LookPath(c); err == nil {
-			return true
+		if p, err := exec.LookPath(c); err == nil {
+			return p, true
 		}
 	}
-	return false
+	return "", false
 }
 
-// SetupDNSHijack installs the OUTPUT-chain redirects. Best-effort:
-// environments without iptables keep working (domain rules degrade to
-// IP-only matching).
-func SetupDNSHijack() error {
-	if !haveIPTables() {
+// dnsHijackSpecs returns the rulespec bodies (without chain/action prefix)
+// of the three rules we manage, in insertion order. Order matters: exempt
+// marked sockets first, then redirect port 53.
+func dnsHijackSpecs() [][]string {
+	return [][]string{
+		{"-m", "mark", "--mark", FwmarkString, "-j", "RETURN"},
+		{"-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(DNSHijackPort)},
+		{"-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(DNSHijackPort)},
+	}
+}
+
+func iptablesRun(bin string, args ...string) (string, error) {
+	full := append([]string{bin}, args...)
+	cmd := exec.Command(full[0], full[1:]...) //nolint:gosec // fixed args we built
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// snapshotOutputRules lists current nat OUTPUT rules as rulespec lines,
+// e.g. "-A OUTPUT -m mark --mark 0x162 -j RETURN".
+func snapshotOutputRules(bin string) ([]string, error) {
+	out, err := iptablesRun(bin, "-t", "nat", "-S", "OUTPUT")
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "-A OUTPUT ") {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
+}
+
+// specKey normalizes a snapshot line into a comparable key.
+func specKey(line string) string {
+	return strings.Join(strings.Fields(line), " ")
+}
+
+// computeDelta returns the multiset difference post - pre: exactly the
+// rules WE added.
+func computeDelta(pre, post []string) []string {
+	counts := map[string]int{}
+	for _, l := range pre {
+		counts[specKey(l)]++
+	}
+	var delta []string
+	for _, l := range post {
+		k := specKey(l)
+		if counts[k] > 0 {
+			counts[k]--
+			continue
+		}
+		delta = append(delta, l)
+	}
+	return delta
+}
+
+func saveHijackState(statePath string, delta []string) error {
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(statePath, []byte(strings.Join(delta, "\n")), 0o600)
+}
+
+func loadHijackState(statePath string) []string {
+	data, err := os.ReadFile(statePath)
+	if err != nil {
 		return nil
 	}
-	for _, r := range dnsHijackRules() {
-		full := append([]string{"iptables"}, r...)
-		cmd := exec.Command(full[0], full[1:]...) //nolint:gosec // fixed args we built
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("dns hijack: %w: %s", err, strings.TrimSpace(string(out)))
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "-A OUTPUT ") {
+			lines = append(lines, l)
 		}
+	}
+	return lines
+}
+
+// SetupDNSHijack inserts the redirects and records the exact delta to
+// statePath. Best-effort: without an iptables-compatible backend it is a
+// no-op (domain rules degrade to IP-only matching).
+func SetupDNSHijack(statePath string) error {
+	bin, ok := firewallBackend()
+	if !ok {
+		return nil
+	}
+	pre, err := snapshotOutputRules(bin)
+	if err != nil {
+		return fmt.Errorf("snapshot pre-state: %w", err)
+	}
+	pos := 1
+	for _, spec := range dnsHijackSpecs() {
+		args := append([]string{"-t", "nat", "-I", "OUTPUT", fmt.Sprint(pos)}, spec...)
+		if out, err := iptablesRun(bin, args...); err != nil {
+			return fmt.Errorf("insert dns hijack rule: %w: %s", err, strings.TrimSpace(out))
+		}
+		pos++
+	}
+	post, err := snapshotOutputRules(bin)
+	if err != nil {
+		return fmt.Errorf("snapshot post-state: %w", err)
+	}
+	delta := computeDelta(pre, post)
+	if len(delta) != len(dnsHijackSpecs()) {
+		// 插入数量与预期不符：回滚本次全部新增，避免留下半套规则。
+		for _, d := range delta {
+			spec := strings.Fields(strings.TrimPrefix(d, "-A OUTPUT "))
+			del := append([]string{"-t", "nat", "-D", "OUTPUT"}, spec...)
+			_, _ = iptablesRun(bin, del...) //nolint:errcheck // best-effort rollback
+		}
+		return fmt.Errorf("dns hijack: inserted %d rules, expected %d; rolled back",
+			len(delta), len(dnsHijackSpecs()))
+	}
+	if err := saveHijackState(statePath, delta); err != nil {
+		return fmt.Errorf("persist hijack state: %w", err)
 	}
 	return nil
 }
 
-// TeardownDNSHijack removes the redirects in reverse order. Idempotent and
-// best-effort: deleting a non-existent rule is treated as success so crash
-// recovery always proceeds.
-func TeardownDNSHijack() error {
-	if !haveIPTables() {
+// TeardownDNSHijack removes exactly the rules recorded in statePath
+// (idempotent: missing state or missing rules are both fine). Falls back
+// to the well-known specs when no state exists (upgrade path).
+func TeardownDNSHijack(statePath string) error {
+	bin, ok := firewallBackend()
+	if !ok {
 		return nil
 	}
-	rules := dnsHijackRules()
+	delta := loadHijackState(statePath)
+	if len(delta) == 0 {
+		for _, spec := range dnsHijackSpecs() {
+			delta = append(delta, "-A OUTPUT "+strings.Join(spec, " "))
+		}
+	} else {
+		os.Remove(statePath) //nolint:errcheck // consumed
+	}
 	var firstErr error
-	for i := len(rules) - 1; i >= 0; i-- {
-		del := append([]string{"iptables"}, dnsHijackDelete(rules[i])...)
-		cmd := exec.Command(del[0], del[1:]...) //nolint:gosec // fixed args we built
-		if out, err := cmd.CombinedOutput(); err != nil &&
-			!strings.Contains(string(out), "No such file or directory") &&
-			!strings.Contains(string(out), "does not exist") {
+	for _, line := range delta {
+		spec := strings.Fields(strings.TrimPrefix(line, "-A OUTPUT "))
+		args := append([]string{"-t", "nat", "-D", "OUTPUT"}, spec...)
+		if out, err := iptablesRun(bin, args...); err != nil &&
+			!strings.Contains(out, "does not exist") {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("dns hijack teardown: %w: %s", err, strings.TrimSpace(string(out)))
+				firstErr = fmt.Errorf("delete %q: %w: %s", line, err, strings.TrimSpace(out))
 			}
 		}
 	}
