@@ -28,6 +28,19 @@ func (s *Stack) handleTCP(ctx context.Context, r *tcp.ForwarderRequest) {
 	}
 	r.Complete(true)
 
+	// Destination port 0 is not a valid TCP service port (RFC 793); flows
+	// like this occasionally show up in the TUN (observed once per boot in
+	// the wild, source still unidentified). Completing the endpoint settles
+	// the kernel side (the app sees the connection fail normally) but we
+	// must not waste a 10 s phantom dial on it.
+	if id.LocalPort == 0 {
+		if debugEnabled() {
+			fmt.Printf("[sscli][debug] tcp flow with dst port 0 dropped (invalid): %s\n", dst)
+		}
+		ep.Close()
+		return
+	}
+
 	outbound, derr := s.router.DialFlow(ctx, "tcp", dst)
 	if debugEnabled() {
 		fmt.Printf("[sscli][debug] tcp %s dial: %v\n", dst, derr)
