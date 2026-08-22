@@ -167,6 +167,10 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// SystemConfigPath is the system-wide config location written by
+// system-level installs. A variable so tests can point it elsewhere.
+var SystemConfigPath = "/etc/sscli/config.yaml"
+
 // DefaultDir returns ~/.config/sscli.
 func DefaultDir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -176,13 +180,36 @@ func DefaultDir() (string, error) {
 	return filepath.Join(home, ".config", "sscli"), nil
 }
 
-// DefaultPath returns ~/.config/sscli/config.yaml.
+// DefaultPath returns the primary config location
+// (~/.config/sscli/config.yaml) — where `sscli config init` writes.
 func DefaultPath() (string, error) {
 	dir, err := DefaultDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "config.yaml"), nil
+}
+
+// Find returns the first existing config file among the supported
+// locations: $SSCLI_CONFIG, ~/.config/sscli/config.yaml and the
+// system-wide /etc/sscli/config.yaml (written by system-level installs).
+// When nothing exists yet the primary user path is returned so callers
+// can produce a useful "not found" message or create it there.
+func Find() (string, error) {
+	if p := os.Getenv("SSCLI_CONFIG"); p != "" {
+		return p, nil
+	}
+	primary, err := DefaultPath()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(primary); err == nil {
+		return primary, nil
+	}
+	if _, err := os.Stat(SystemConfigPath); err == nil {
+		return SystemConfigPath, nil
+	}
+	return primary, nil
 }
 
 // Load reads and parses the config file at path, applying defaults and validation.

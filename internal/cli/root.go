@@ -20,7 +20,7 @@ func NewRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:     "sscli",
 		Version: version,
-		Short: "Native Linux Shadowsocks TUN routing client",
+		Short:   "Native Linux Shadowsocks TUN routing client",
 		Long: `sscli takes over system traffic through a Linux TUN device and routes it
 DIRECT or through a Shadowsocks proxy according to GFW List, China domain/IP
 lists, LAN rules and the selected mode (gfw | bypass | global).
@@ -60,12 +60,13 @@ func Execute(version string) error {
 	return nil
 }
 
-// resolveConfigPath returns the effective config path.
+// resolveConfigPath returns the effective config path: --config flag,
+// then the first existing default location.
 func resolveConfigPath() (string, error) {
 	if cfgPath != "" {
 		return cfgPath, nil
 	}
-	return config.DefaultPath()
+	return config.Find()
 }
 
 // loadConfig loads the effective config file.

@@ -15,7 +15,7 @@ import (
 
 // Status reports current runtime state (requirement 二十一).
 func Status(w io.Writer) error {
-	cfgPath, err := config.DefaultPath()
+	cfgPath, err := config.Find()
 	if err != nil {
 		return err
 	}
