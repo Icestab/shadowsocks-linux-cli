@@ -38,7 +38,7 @@ Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/master/scripts/install-remote.sh | bash
 ```
 
-自动完成：解析最新版本 → 下载对应架构的 Release 包 → SHA256 校验 → 安装 sscli/sslocal/规则 → 生成配置模板。可选环境变量：`SS_VERSION=v0.1.1`、`PREFIX=~/.local`。
+自动完成：解析最新版本 → 下载对应架构的 Release 包 → SHA256 校验 → 安装 sscli/sslocal/规则 → 生成配置模板。可选环境变量：`SS_VERSION=v0.2.0`、`PREFIX=~/.local`。
 
 ### 方式二：下载发布包（无需 Go 环境）
 
@@ -47,8 +47,8 @@ curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/maste
 **包内自带全部依赖**：静态编译的 sscli、官方预编译 sslocal、打包时点的三份路由规则基线——安装阶段无需联网，也没有"没有代理就下不了规则"的引导问题：
 
 ```bash
-echo "<官方sha256>  sscli-v0.1.1-linux-x86_64.tar.xz" | sha256sum -c -   # 可选校验
-tar xJf sscli-v0.1.1-linux-x86_64.tar.xz && cd sscli-v0.1.1-linux-x86_64
+echo "<官方sha256>  sscli-v0.2.0-linux-x86_64.tar.xz" | sha256sum -c -   # 可选校验
+tar xJf sscli-v0.2.0-linux-x86_64.tar.xz && cd sscli-v0.2.0-linux-x86_64
 sudo ./install.sh     # 离线完成部署，随后自动尝试在线刷新规则到最新
 ```
 

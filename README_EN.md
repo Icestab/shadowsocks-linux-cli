@@ -39,15 +39,15 @@ curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/maste
 ```
 
 Resolves the latest release, verifies the checksum and installs everything.
-Env overrides: `SS_VERSION=v0.1.1`, `PREFIX=~/.local`.
+Env overrides: `SS_VERSION=v0.2.0`, `PREFIX=~/.local`.
 
 ### Option 2: prebuilt release package
 
 Grab `sscli-v<version>-linux-<arch>.tar.xz` (+ `.sha256`) from [Releases](https://github.com/Icestab/shadowsocks-linux-cli/releases). Packages are offline-complete: they bundle the sscli binary, the official sslocal binary, and a rule-file baseline captured at build time.
 
 ```bash
-echo "<official-sha256>  sscli-v0.1.1-linux-x86_64.tar.xz" | sha256sum -c -   # optional
-tar xJf sscli-v0.1.1-linux-x86_64.tar.xz && cd sscli-v0.1.1-linux-x86_64
+echo "<official-sha256>  sscli-v0.2.0-linux-x86_64.tar.xz" | sha256sum -c -   # optional
+tar xJf sscli-v0.2.0-linux-x86_64.tar.xz && cd sscli-v0.2.0-linux-x86_64
 sudo ./install.sh     # offline deployment, then refreshes rules online automatically
 ```
 

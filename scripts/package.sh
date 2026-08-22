@@ -11,8 +11,8 @@
 # 用法:
 #   ./scripts/package.sh <版本号> [x86_64|aarch64]
 # 示例:
-#   ./scripts/package.sh v0.1.0            # 当前架构
-#   ./scripts/package.sh v0.1.0 aarch64    # 交叉编译 ARM64
+#   ./scripts/package.sh v0.2.0            # 当前架构
+#   ./scripts/package.sh v0.2.0 aarch64    # 交叉编译 ARM64
 #
 # 产物: dist/sscli-<版本>-linux-<架构>.tar.xz(.sha256)
 set -euo pipefail

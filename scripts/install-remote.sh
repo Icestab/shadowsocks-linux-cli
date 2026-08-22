@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/master/scripts/install-remote.sh | bash
 #
 # 环境变量:
-#   SS_VERSION   指定版本（默认安装最新 Release，如 v0.1.1）
+#   SS_VERSION   指定版本（默认安装最新 Release，如 v0.2.0）
 #   PREFIX       安装前缀（默认 /usr/local）
 #   SUDO         覆盖提权命令（如 SUDO="" 且以 root 运行）
 #
