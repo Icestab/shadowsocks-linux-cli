@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/network"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/network"
 )
 
 // Status reports current runtime state (requirement 二十一).

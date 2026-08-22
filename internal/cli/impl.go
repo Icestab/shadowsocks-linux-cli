@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/update"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/update"
 )
 
 // updateRules implements `sscli update` (requirement 二十九).

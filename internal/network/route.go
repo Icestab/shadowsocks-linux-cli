@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // Manager mutates routing state through the `ip` command (the approach

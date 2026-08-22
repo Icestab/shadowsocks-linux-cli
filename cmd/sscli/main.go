@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/dy/sscli/internal/cli"
+	"github.com/Icestab/sscli/internal/cli"
 )
 
 func main() {

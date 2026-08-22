@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/dns"
-	"github.com/dy/sscli/internal/network"
-	"github.com/dy/sscli/internal/proxy"
-	"github.com/dy/sscli/internal/router"
-	"github.com/dy/sscli/internal/tun"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/dns"
+	"github.com/Icestab/sscli/internal/network"
+	"github.com/Icestab/sscli/internal/proxy"
+	"github.com/Icestab/sscli/internal/router"
+	"github.com/Icestab/sscli/internal/tun"
 )
 
 const (

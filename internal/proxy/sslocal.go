@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dy/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/config"
 )
 
 // Sslocal manages one sslocal child process in SOCKS5 local mode.

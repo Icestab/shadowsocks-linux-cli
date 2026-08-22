@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/proxy"
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/proxy"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // testResult is one line of `sscli test` output.

@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // RulesDirName is the subdirectory of the config dir holding rule files

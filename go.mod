@@ -1,4 +1,4 @@
-module github.com/dy/sscli
+module github.com/Icestab/sscli
 
 go 1.26.6
 

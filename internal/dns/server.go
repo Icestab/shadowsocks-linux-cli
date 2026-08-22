@@ -7,7 +7,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // Server is the internal DNS listener. In TUN mode every UDP/TCP packet

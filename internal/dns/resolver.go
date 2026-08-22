@@ -10,7 +10,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // Fwmark mirrors proxy.Fwmark (kept separate to avoid an import cycle):

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/dns"
-	"github.com/dy/sscli/internal/proxy"
-	"github.com/dy/sscli/internal/router"
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/dns"
+	"github.com/Icestab/sscli/internal/proxy"
+	"github.com/Icestab/sscli/internal/router"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // buildEngine loads config custom rules plus downloaded rule files.

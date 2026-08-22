@@ -10,9 +10,9 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/dy/sscli/internal/dns"
-	"github.com/dy/sscli/internal/proxy"
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/dns"
+	"github.com/Icestab/sscli/internal/proxy"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // Router decides and establishes outbound connections.

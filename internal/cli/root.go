@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/dy/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/config"
 )
 
 var (

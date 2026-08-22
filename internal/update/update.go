@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/dy/sscli/internal/config"
-	"github.com/dy/sscli/internal/router"
+	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/sscli/internal/router"
 )
 
 // Result reports one list update.

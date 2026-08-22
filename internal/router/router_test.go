@@ -6,8 +6,8 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/dy/sscli/internal/dns"
-	"github.com/dy/sscli/internal/rules"
+	"github.com/Icestab/sscli/internal/dns"
+	"github.com/Icestab/sscli/internal/rules"
 )
 
 // countingDialer never touches the network; it only records calls.
