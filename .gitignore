@@ -1,0 +1,10 @@
+# 构建产物（内嵌本机绝对路径，且不应入库）
+/bin/
+
+# 本地工具链与依赖缓存（453MB，含 /home/<user> 路径指纹）
+/.toolchain/
+
+# 运行时产物
+*.pid
+*.test
+coverage.out

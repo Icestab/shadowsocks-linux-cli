@@ -1,0 +1,28 @@
+[Unit]
+Description=sscli - Shadowsocks TUN routing client
+Documentation=https://github.com/dy/sscli
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# sscli restores TUN/routes/rules on SIGTERM; TimeoutStopSec must allow it.
+ExecStart=/usr/local/bin/sscli start --config /etc/sscli/config.yaml
+ExecStop=/usr/local/bin/sscli stop --config /etc/sscli/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening: keep only what network management needs.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/sscli /var/lib/sscli
+PrivateTmp=true
+ProtectKernelTunables=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
