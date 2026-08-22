@@ -1,4 +1,4 @@
-module github.com/Icestab/sscli
+module github.com/Icestab/shadowsocks-linux-cli
 
 go 1.26.6
 

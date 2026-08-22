@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
 )
 
 func newModeCmd() *cobra.Command {

@@ -6,8 +6,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/Icestab/sscli/internal/dns"
-	"github.com/Icestab/sscli/internal/tun"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/dns"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/tun"
 )
 
 // flowAdapter adapts Router+dns.Server to the tun.FlowRouter interface,

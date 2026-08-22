@@ -10,9 +10,9 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/Icestab/sscli/internal/dns"
-	"github.com/Icestab/sscli/internal/proxy"
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/dns"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/proxy"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 // Router decides and establishes outbound connections.

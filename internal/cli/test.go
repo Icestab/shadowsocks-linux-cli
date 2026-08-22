@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Icestab/sscli/internal/config"
-	"github.com/Icestab/sscli/internal/proxy"
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/proxy"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 // testResult is one line of `sscli test` output.

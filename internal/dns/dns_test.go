@@ -9,7 +9,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 func TestMappingRecordAndLookup(t *testing.T) {

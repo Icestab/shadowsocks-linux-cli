@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
 )
 
 // TestSocks5DialerThroughSSChain is an end-to-end test of the PROXY path:

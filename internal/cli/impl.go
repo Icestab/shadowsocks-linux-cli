@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Icestab/sscli/internal/config"
-	"github.com/Icestab/sscli/internal/update"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/update"
 )
 
 // updateRules implements `sscli update` (requirement 二十九).

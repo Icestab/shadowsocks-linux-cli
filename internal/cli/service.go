@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Icestab/sscli/internal/config"
-	"github.com/Icestab/sscli/internal/daemon"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/daemon"
 )
 
 func newStartCmd() *cobra.Command {

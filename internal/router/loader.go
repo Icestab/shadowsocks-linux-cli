@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Icestab/sscli/internal/config"
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 // RulesDirName is the subdirectory of the config dir holding rule files

@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 // Manager mutates routing state through the `ip` command (the approach

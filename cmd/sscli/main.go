@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/Icestab/sscli/internal/cli"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/cli"
 )
 
 func main() {

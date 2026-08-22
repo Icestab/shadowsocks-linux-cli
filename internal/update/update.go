@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/Icestab/sscli/internal/config"
-	"github.com/Icestab/sscli/internal/router"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/router"
 )
 
 // Result reports one list update.

@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/Icestab/sscli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
 )
 
 // Fwmark is the packet mark applied to sscli's own outbound sockets so the

@@ -10,7 +10,7 @@ import (
 // defaultConfigTemplate is written by `sscli config init`. Placeholders in
 // <...> must be filled by the user.
 const defaultConfigTemplate = `# sscli configuration
-# Full reference: https://github.com/Icestab/sscli (docs/config.md)
+# Full reference: https://github.com/Icestab/shadowsocks-linux-cli (docs/config.md)
 
 # Routing mode: gfw | bypass | global
 mode: gfw

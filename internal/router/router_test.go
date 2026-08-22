@@ -6,8 +6,8 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/Icestab/sscli/internal/dns"
-	"github.com/Icestab/sscli/internal/rules"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/dns"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/rules"
 )
 
 // countingDialer never touches the network; it only records calls.
