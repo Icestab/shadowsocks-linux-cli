@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -69,11 +70,17 @@ func resolveConfigPath() (string, error) {
 	return config.Find()
 }
 
-// loadConfig loads the effective config file.
+// loadConfig loads the effective config file, adding a hint when the
+// config exists but is unreadable (it holds secrets, mode 0600).
 func loadConfig() (*config.Config, error) {
 	p, err := resolveConfigPath()
 	if err != nil {
 		return nil, err
 	}
-	return config.Load(p)
+	cfg, err := config.Load(p)
+	if err != nil && os.IsPermission(errors.Unwrap(err)) {
+		hint := "(config contains the password with mode 0600; re-run with sudo)"
+		return nil, fmt.Errorf("%w\n%s", err, hint)
+	}
+	return cfg, err
 }
