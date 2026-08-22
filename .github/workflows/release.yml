@@ -29,9 +29,12 @@ jobs:
       - name: Package
         run: ./scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.pkg_arch }}"
 
-      - name: Smoke test (binary runs)
+      # 冒烟测试只能在 runner 本机架构上执行；交叉编译产物跳过。
+      - name: Smoke test (binary runs, native arch only)
+        if: matrix.goarch == 'amd64'
         run: |
-          ./dist/sscli-*-linux-${{ matrix.pkg_arch }}/sscli --help >/dev/null
+          ./dist/sscli-*-linux-x86_64/sscli --help >/dev/null
+          ./dist/sscli-*-linux-x86_64/sscli --version
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
