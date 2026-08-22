@@ -145,6 +145,10 @@ func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 }
 
 // Close stops the pumps and releases the stack.
+//
+// NOTE: callers must close the underlying TUN device first (or ensure
+// traffic is flowing) — pumpTUNToStack otherwise blocks in Read and
+// s.wg.Wait() would deadlock. See daemon.shutdown for the safe order.
 func (s *Stack) Close() {
 	s.cancel()
 	s.wg.Wait()

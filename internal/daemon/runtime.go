@@ -32,9 +32,13 @@ type Runtime struct {
 	dev     *tun.Device
 	stack   *tun.Stack
 	nm      *network.Manager
-	engine  interface{ SetMode(string) } // placeholder to avoid import cycle
 	cancel  context.CancelFunc
+
+	forceCh chan os.Signal // second signal triggers forced exit
 }
+
+// forceSignalCh mirrors Runtime.forceCh for the force-quit goroutine.
+var forceSignalCh chan os.Signal
 
 // Start launches the full pipeline. Requires root/CAP_NET_ADMIN.
 func Start(loadCfg func() (*config.Config, error)) error {
@@ -65,6 +69,18 @@ func Start(loadCfg func() (*config.Config, error)) error {
 	fmt.Printf("sscli started (pid %d), mode=%s tun=%s\n", pid, cfg.Mode, cfg.TUN.Name)
 
 	waitForSignalOrChildExit(rt)
+	// 第二个信号 = 用户要求强制退出：跳过优雅收尾，只做最快的网络清扫。
+	if rt.forceCh != nil {
+		go func() {
+			<-rt.forceCh
+			fmt.Println("second signal: forcing exit with fast network sweep")
+			network.TeardownDNSHijack()                                             //nolint:errcheck
+			network.NewManager(cfg.TUN.Name, proxy.Fwmark, routingTable).Teardown() //nolint:errcheck
+			network.DeleteLink(cfg.TUN.Name)                                        //nolint:errcheck
+			removePid()
+			os.Exit(1)
+		}()
+	}
 	shutdown(rt)
 	removePid()
 	fmt.Println("sscli stopped, network restored.")
@@ -172,14 +188,27 @@ func Stop() error {
 	if err := p.Signal(syscall.SIGTERM); err != nil {
 		return err
 	}
-	// Wait briefly for the pid file to disappear.
-	for i := 0; i < 50; i++ {
+	// 等待优雅退出；超时则 SIGKILL 并由本进程接管网络清扫
+	// （被 kill 的子进程无法清理自己的 iptables/路由）。
+	for i := 0; i < 100; i++ {
 		time.Sleep(100 * time.Millisecond)
 		if r, _ := isRunning(); !r {
 			return nil
 		}
 	}
-	return fmt.Errorf("pid %d did not exit within 5s", pid)
+	fmt.Println("graceful stop timed out, sending SIGKILL and sweeping network state...")
+	_ = p.Kill()
+	for i := 0; i < 30; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if r, _ := isRunning(); !r {
+			break
+		}
+	}
+	network.TeardownDNSHijack() //nolint:errcheck // victim cannot clean up itself
+	nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
+	_ = nm.Teardown()
+	network.DeleteLink(defaultTunName()) //nolint:errcheck
+	return fmt.Errorf("pid %d had to be killed; network state was force-swept — please verify connectivity", pid)
 }
 
 func defaultTunName() string { return "sscli0" }
@@ -187,6 +216,7 @@ func defaultTunName() string { return "sscli0" }
 func waitForSignalOrChildExit(rt *Runtime) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	rt.forceCh = ch
 	select {
 	case s := <-ch:
 		fmt.Println("received signal:", s)
@@ -200,6 +230,14 @@ func waitForSignalOrChildExit(rt *Runtime) {
 func shutdown(rt *Runtime) {
 	if rt == nil {
 		return
+	}
+	// 顺序至关重要：先取消上下文并关闭 TUN 设备解除 pump 阻塞，
+	// 再等 stack 收尾——否则 pump 卡在 Read 上导致整个关闭流程死锁。
+	if rt.cancel != nil {
+		rt.cancel()
+	}
+	if rt.dev != nil {
+		rt.dev.Close()
 	}
 	if rt.stack != nil {
 		rt.stack.Close()

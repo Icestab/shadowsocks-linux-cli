@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -28,6 +29,9 @@ func (s *Stack) handleTCP(ctx context.Context, r *tcp.ForwarderRequest) {
 	r.Complete(true)
 
 	outbound, derr := s.router.DialFlow(ctx, "tcp", dst)
+	if debugEnabled() {
+		fmt.Printf("[sscli][debug] tcp %s dial: %v\n", dst, derr)
+	}
 	if derr != nil {
 		ep.Close()
 		return
@@ -84,6 +88,8 @@ func (s *Stack) serveDNSOverUDP(ctx context.Context, conn *gonet.UDPConn) {
 		_, _ = conn.WriteTo(resp, nil)
 	}
 }
+
+func debugEnabled() bool { return os.Getenv("SSCLI_DEBUG") != "" }
 
 // pipeBoth copies in both directions until either side closes.
 func pipeBoth(ctx context.Context, a io.ReadWriteCloser, b Conn) {
