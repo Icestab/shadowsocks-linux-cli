@@ -104,7 +104,7 @@ func TestResolverSplitRouting(t *testing.T) {
 	// Just verify Resolve returns quickly with unreachable upstreams
 	// rather than hanging (timeout bound).
 	start := time.Now()
-	_, _ = r.Resolve(ctx, "whatever.io", mdns.TypeA)
+	_, _, _ = r.Resolve(ctx, "whatever.io", mdns.TypeA)
 	if elapsed := time.Since(start); elapsed > 8*time.Second {
 		t.Errorf("Resolve took %v with dead upstreams; timeout not bounded", elapsed)
 	}
@@ -181,6 +181,76 @@ func TestServerServesTCP(t *testing.T) {
 		t.Fatalf("answer = %v, want A 93.184.216.34", resp.Answer[0])
 	}
 }
+// TestServerNODATAForMissingType: a name that exists but has no records of
+// the requested type (e.g. AAAA for an IPv4-only name) must come back as
+// NOERROR with an empty answer — NOT NXDOMAIN, which would make clients
+// treat the whole name as nonexistent.
+func TestServerNODATAForMissingType(t *testing.T) {
+	upstream := mdns.NewServeMux()
+	upstream.HandleFunc("nodata.test.", func(w mdns.ResponseWriter, r *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(r)
+		if r.Question[0].Qtype == mdns.TypeA {
+			resp.Answer = append(resp.Answer, &mdns.A{
+				Hdr: mdns.RR_Header{Name: r.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 60},
+				A:   net.IP{1, 2, 3, 4},
+			})
+		}
+		// AAAA: NOERROR with no answer records (NODATA).
+		_ = w.WriteMsg(resp)
+	})
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
+	defer upSrv.Shutdown()
+	go func() { _ = upSrv.ActivateAndServe() }()
+
+	china := rules.NewDomainSet()
+	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	srv := NewServer(resolver, nil)
+
+	req := new(mdns.Msg)
+	req.SetQuestion("www.nodata.test.", mdns.TypeAAAA)
+	resp := srv.HandleMsg(context.Background(), req)
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("AAAA NODATA rcode = %d (%s), want NOERROR", resp.Rcode, mdns.RcodeToString[resp.Rcode])
+	}
+	if n := len(resp.Answer); n != 0 {
+		t.Fatalf("answers = %d, want 0", n)
+	}
+}
+
+// TestServerNXDOMAINPropagation: a genuine "name does not exist" answer
+// from upstream must surface as NXDOMAIN, not as empty NOERROR.
+func TestServerNXDOMAINPropagation(t *testing.T) {
+	upstream := mdns.NewServeMux()
+	upstream.HandleFunc(".", func(w mdns.ResponseWriter, r *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetRcode(r, mdns.RcodeNameError)
+		_ = w.WriteMsg(resp)
+	})
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
+	defer upSrv.Shutdown()
+	go func() { _ = upSrv.ActivateAndServe() }()
+
+	china := rules.NewDomainSet()
+	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	srv := NewServer(resolver, nil)
+
+	req := new(mdns.Msg)
+	req.SetQuestion("gone.test.", mdns.TypeA)
+	resp := srv.HandleMsg(context.Background(), req)
+	if resp.Rcode != mdns.RcodeNameError {
+		t.Fatalf("rcode = %d, want NXDOMAIN", resp.Rcode)
+	}
+}
+
 // TestForeignQueriesViaProxyDial verifies that when a proxy dialer is
 // installed, foreign upstream queries are exchanged over TCP through that
 // dialer instead of plaintext UDP from the local machine.
@@ -218,7 +288,7 @@ func TestForeignQueriesViaProxyDial(t *testing.T) {
 	})
 
 	addrs, ttl, ok := func() ([]netip.Addr, uint32, bool) {
-		a, ttl := resolver.Resolve(context.Background(), "host.foreign.test", mdns.TypeA)
+		a, ttl, _ := resolver.Resolve(context.Background(), "host.foreign.test", mdns.TypeA)
 		return a, ttl, len(a) > 0
 	}()
 	if !ok || dialed == 0 {

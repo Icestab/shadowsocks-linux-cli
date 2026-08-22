@@ -89,8 +89,11 @@ func (r *Resolver) SetProxyDial(fn func(ctx context.Context, network, addr strin
 func (r *Resolver) Mapping() *Mapping { return r.mapping }
 
 // Resolve answers A/AAAA queries for domain, choosing upstreams per split
-// rules and recording results. Returns IPs and TTL.
-func (r *Resolver) Resolve(ctx context.Context, domain string, qtype uint16) ([]netip.Addr, uint32) {
+// rules and recording results. nxdomain reports a definitive "name does
+// not exist" answer; an empty result with nxdomain=false means NODATA (the
+// name exists but has no records of qtype) — callers must not conflate
+// the two (NXDOMAIN would make clients treat the whole name as gone).
+func (r *Resolver) Resolve(ctx context.Context, domain string, qtype uint16) (addrs []netip.Addr, ttl uint32, nxdomain bool) {
 	upstreams := r.foreign
 	viaProxy := r.proxyDial != nil
 	if r.china != nil && r.china.Contains(domain) {
@@ -99,23 +102,31 @@ func (r *Resolver) Resolve(ctx context.Context, domain string, qtype uint16) ([]
 	}
 	var lastErr error
 	for _, up := range upstreams {
-		addrs, ttl, err := r.queryUpstream(ctx, up, domain, qtype, viaProxy)
+		addrs, ttl, nx, err := r.queryUpstream(ctx, up, domain, qtype, viaProxy)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		for _, a := range addrs {
-			r.mapping.Record(domain, a, ttl)
+		if len(addrs) > 0 {
+			for _, a := range addrs {
+				r.mapping.Record(domain, a, ttl)
+			}
+			return addrs, ttl, false
 		}
-		return addrs, ttl
+		if nx {
+			// NXDOMAIN is authoritative: the name does not exist.
+			return nil, 0, true
+		}
+		// NODATA from this upstream: keep trying the rest (other views
+		// may have records), fall through to NODATA below if none do.
 	}
 	if lastErr != nil {
-		return nil, 0
+		return nil, 0, false
 	}
-	return nil, 0
+	return nil, 0, false
 }
 
-func (r *Resolver) queryUpstream(ctx context.Context, upstream, domain string, qtype uint16, viaProxy bool) ([]netip.Addr, uint32, error) {
+func (r *Resolver) queryUpstream(ctx context.Context, upstream, domain string, qtype uint16, viaProxy bool) ([]netip.Addr, uint32, bool, error) {
 	q := new(mdns.Msg)
 	q.SetQuestion(mdns.Fqdn(domain), qtype)
 	q.RecursionDesired = true
@@ -135,21 +146,21 @@ func (r *Resolver) queryUpstream(ctx context.Context, upstream, domain string, q
 	select {
 	case res := <-done:
 		if res.err != nil {
-			return nil, 0, fmt.Errorf("query %s via %s: %w", domain, upstream, res.err)
+			return nil, 0, false, fmt.Errorf("query %s via %s: %w", domain, upstream, res.err)
 		}
 		return extractAddrs(res.resp, qtype)
 	case <-ctx.Done():
-		return nil, 0, ctx.Err()
+		return nil, 0, false, ctx.Err()
 	}
 }
 
 // exchangeViaProxy performs the DNS exchange over TCP through the proxy
 // dialer. UDP is not an option here: the local SOCKS5 endpoint only
 // supports TCP CONNECT.
-func (r *Resolver) exchangeViaProxy(ctx context.Context, q *mdns.Msg, upstream, domain string) ([]netip.Addr, uint32, error) {
+func (r *Resolver) exchangeViaProxy(ctx context.Context, q *mdns.Msg, upstream, domain string) ([]netip.Addr, uint32, bool, error) {
 	raw, err := r.proxyDial(ctx, "tcp", upstream)
 	if err != nil {
-		return nil, 0, fmt.Errorf("proxy dial %s for %s: %w", upstream, domain, err)
+		return nil, 0, false, fmt.Errorf("proxy dial %s for %s: %w", upstream, domain, err)
 	}
 	conn := &mdns.Conn{Conn: raw}
 	defer conn.Close() //nolint:errcheck
@@ -163,11 +174,11 @@ func (r *Resolver) exchangeViaProxy(ctx context.Context, q *mdns.Msg, upstream, 
 	select {
 	case res := <-done:
 		if res.err != nil {
-			return nil, 0, fmt.Errorf("query %s via %s (proxied): %w", domain, upstream, res.err)
+			return nil, 0, false, fmt.Errorf("query %s via %s (proxied): %w", domain, upstream, res.err)
 		}
 		return extractAddrs(res.resp, q.Question[0].Qtype)
 	case <-ctx.Done():
-		return nil, 0, ctx.Err()
+		return nil, 0, false, ctx.Err()
 	}
 }
 
@@ -176,9 +187,19 @@ type result struct {
 	err  error
 }
 
-func extractAddrs(resp *mdns.Msg, qtype uint16) ([]netip.Addr, uint32, error) {
-	if resp == nil || resp.Rcode != mdns.RcodeSuccess {
-		return nil, 0, fmt.Errorf("upstream returned rcode %v", respRcode(resp))
+// extractAddrs pulls A/AAAA records out of a response. NXDOMAIN is a valid
+// answer (name does not exist) and is reported via the nxdomain flag; any
+// other non-success rcode is an error.
+func extractAddrs(resp *mdns.Msg, qtype uint16) ([]netip.Addr, uint32, bool, error) {
+	if resp == nil {
+		return nil, 0, false, fmt.Errorf("no response from upstream")
+	}
+	switch resp.Rcode {
+	case mdns.RcodeSuccess:
+	case mdns.RcodeNameError:
+		return nil, 0, true, nil
+	default:
+		return nil, 0, false, fmt.Errorf("upstream returned rcode %v", respRcode(resp))
 	}
 	var (
 		out []netip.Addr
@@ -207,7 +228,7 @@ func extractAddrs(resp *mdns.Msg, qtype uint16) ([]netip.Addr, uint32, error) {
 			ttl = h.Ttl
 		}
 	}
-	return out, ttl, nil
+	return out, ttl, false, nil
 }
 
 func respRcode(resp *mdns.Msg) int {
@@ -220,7 +241,7 @@ func respRcode(resp *mdns.Msg) int {
 // LookupHost resolves domain to its first IPv4 address (helper for tests
 // and `sscli dns`).
 func (r *Resolver) LookupHost(ctx context.Context, domain string) (netip.Addr, error) {
-	addrs, _ := r.Resolve(ctx, domain, mdns.TypeA)
+	addrs, _, _ := r.Resolve(ctx, domain, mdns.TypeA)
 	for _, a := range addrs {
 		if a.Is4() || a.Is4In6() {
 			return a.Unmap(), nil

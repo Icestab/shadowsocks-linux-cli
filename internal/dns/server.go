@@ -45,9 +45,17 @@ func (s *Server) HandleMsg(ctx context.Context, req *mdns.Msg) *mdns.Msg {
 		return resp
 	}
 
-	addrs, ttl := s.resolver.Resolve(ctx, domain, q.Qtype)
-	if len(addrs) == 0 {
+	addrs, ttl, nxdomain := s.resolver.Resolve(ctx, domain, q.Qtype)
+	if nxdomain {
 		resp.Rcode = mdns.RcodeNameError
+		return resp
+	}
+	if len(addrs) == 0 {
+		// NODATA: the name exists but has no records of the requested
+		// type (e.g. AAAA for an IPv4-only name). NOERROR with an empty
+		// answer — NXDOMAIN here would make clients treat the whole name
+		// as nonexistent.
+		resp.Rcode = mdns.RcodeSuccess
 		return resp
 	}
 	for _, ip := range addrs {
