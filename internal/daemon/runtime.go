@@ -107,9 +107,16 @@ func boot(cfg *config.Config) (*Runtime, error) {
 		return rt, err
 	}
 
-	// 5. Policy routing with loop-prevention exceptions.
+	// 5. Policy routing with loop-prevention exceptions + DNS hijack
+	// (redirects local :53 into our resolver so the domain->IP mapping
+	// fills even when the system resolver sits on a private address).
 	if err := rt.nm.Setup(serverIP); err != nil {
 		return rt, err
+	}
+	if cfg.DNS.Enabled {
+		if err := network.SetupDNSHijack(); err != nil {
+			return rt, err
+		}
 	}
 
 	// 6. Rules engine from config + rule files.
@@ -149,6 +156,7 @@ func Stop() error {
 	running, pid := isRunning()
 	if !running {
 		// Sweep leftovers from a crashed previous run (idempotent).
+		network.TeardownDNSHijack() //nolint:errcheck // best-effort sweep
 		nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
 		err := nm.Teardown()
 		network.DeleteLink(defaultTunName()) //nolint:errcheck // may not exist
@@ -196,6 +204,7 @@ func shutdown(rt *Runtime) {
 	if rt.stack != nil {
 		rt.stack.Close()
 	}
+	network.TeardownDNSHijack() //nolint:errcheck // best-effort sweep
 	if rt.nm != nil {
 		_ = rt.nm.Teardown()
 	} else {
