@@ -86,7 +86,8 @@ sslocal:
 ## Usage
 
 ```bash
-sudo sscli start              # requires root/CAP_NET_ADMIN (TUN + policy routing)
+sudo sscli start              # daemonizes and returns; log at ~/.local/state/sscli/sscli.log
+sudo sscli start --foreground # attached mode for debugging (Ctrl-C stops)
 sscli status                  # runtime status (server address masked)
 sscli mode bypass             # switch mode (takes effect after restart)
 sscli route github.com baidu.com   # inspect routing decisions

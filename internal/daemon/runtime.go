@@ -7,8 +7,11 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,11 +40,22 @@ type Runtime struct {
 	forceCh chan os.Signal // second signal triggers forced exit
 }
 
-// forceSignalCh mirrors Runtime.forceCh for the force-quit goroutine.
-var forceSignalCh chan os.Signal
+const daemonEnv = "SSCLI_DAEMON"
 
-// Start launches the full pipeline. Requires root/CAP_NET_ADMIN.
-func Start(loadCfg func() (*config.Config, error)) error {
+// LogFile returns the path of the daemon log (StateDir/sscli.log).
+func LogFile() (string, error) {
+	d, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "sscli.log"), nil
+}
+
+// Start launches the full pipeline. Default behavior is to daemonize:
+// re-exec self in a new session, wait until it is up, then return so the
+// terminal stays usable. Pass foreground=true (sscli start --foreground)
+// to run attached instead. Requires root/CAP_NET_ADMIN either way.
+func Start(loadCfg func() (*config.Config, error), foreground bool) error {
 	cfg, err := loadCfg()
 	if err != nil {
 		return err
@@ -51,6 +65,10 @@ func Start(loadCfg func() (*config.Config, error)) error {
 	}
 	if running, pid := isRunning(); running {
 		return fmt.Errorf("sscli already running (pid %d)", pid)
+	}
+
+	if !foreground && os.Getenv(daemonEnv) != "1" {
+		return daemonize()
 	}
 
 	rt, err := boot(cfg)
@@ -66,7 +84,7 @@ func Start(loadCfg func() (*config.Config, error)) error {
 		shutdown(rt)
 		return err
 	}
-	fmt.Printf("sscli started (pid %d), mode=%s tun=%s\n", pid, cfg.Mode, cfg.TUN.Name)
+	fmt.Printf("sscli daemon ready (pid %d), mode=%s tun=%s\n", pid, cfg.Mode, cfg.TUN.Name)
 
 	waitForSignalOrChildExit(rt)
 	// 第二个信号 = 用户要求强制退出：跳过优雅收尾，只做最快的网络清扫。
@@ -212,6 +230,75 @@ func Stop() error {
 }
 
 func defaultTunName() string { return "sscli0" }
+
+// daemonize re-executes this exact command line with SSCLI_DAEMON=1 in a
+// new session, waits for the pid file, and returns. On early child death
+// the last log lines are surfaced to explain why.
+func daemonize() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logPath, err := LogFile()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
+		return err
+	}
+	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logF.Close() //nolint:errcheck
+
+	cmd := exec.Command(self, os.Args[1:]...)
+	cmd.Env = append(os.Environ(), daemonEnv+"=1")
+	cmd.Stdin = nil
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("spawn daemon: %w", err)
+	}
+	child := cmd.Process.Pid
+
+	// 等待 pid 文件出现（子进程 boot 完成后写入）。
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(150 * time.Millisecond)
+		if r, _ := isRunning(); r {
+			fmt.Printf("sscli started (pid %d)\nlog: %s\n", child, logPath)
+			return nil
+		}
+		// 子进程已退出且未留下 pid：启动失败，回显日志尾部。
+		if cmd.ProcessState != nil || !processAlive(child) {
+			logF.Sync()
+			return fmt.Errorf("daemon exited during startup; last log lines:\n%s", tailFile(logPath, 15))
+		}
+	}
+	return fmt.Errorf("daemon did not report startup within 20s; check %s", logPath)
+}
+
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
+func tailFile(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "(no log)"
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
 
 func waitForSignalOrChildExit(rt *Runtime) {
 	ch := make(chan os.Signal, 1)

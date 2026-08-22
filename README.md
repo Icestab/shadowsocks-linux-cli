@@ -124,7 +124,8 @@ rules:
 ## 使用
 
 ```bash
-sudo sscli start              # 启动（需要 root/CAP_NET_ADMIN）
+sudo sscli start              # 后台守护化，立即返回（需要 root/CAP_NET_ADMIN）
+sudo sscli start --foreground # 前台运行调试（Ctrl-C 停止）
 sscli status                  # 查看运行状态
 sscli mode bypass             # 切换模式（重启生效）
 sscli route github.com baidu.com   # 查询目标的分流决策

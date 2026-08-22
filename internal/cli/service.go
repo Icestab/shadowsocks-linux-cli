@@ -11,13 +11,17 @@ import (
 )
 
 func newStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var foreground bool
+	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start sscli (TUN + routing + DNS + sslocal)",
+		Short: "Start sscli (daemonized; --foreground to run attached)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return daemon.Start(loadConfigFn)
+			return daemon.Start(loadConfigFn, foreground)
 		},
 	}
+	cmd.Flags().BoolVar(&foreground, "foreground", false,
+		"run attached to the terminal instead of daemonizing (Ctrl-C stops)")
+	return cmd
 }
 
 func newStopCmd() *cobra.Command {
@@ -38,7 +42,7 @@ func newRestartCmd() *cobra.Command {
 			if err := daemon.Stop(); err != nil && err != daemon.ErrNotRunning {
 				fmt.Println("stop:", err)
 			}
-			return daemon.Start(loadConfigFn)
+			return daemon.Start(loadConfigFn, false)
 		},
 	}
 }
