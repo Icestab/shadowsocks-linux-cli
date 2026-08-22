@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sync"
 
+	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -29,6 +30,29 @@ func parsePrefixAddr(cidr string) netip.Addr {
 		return netip.Addr{}
 	}
 	return p.Addr()
+}
+
+// virtioNetHdrLen is the size of the kernel's virtio_net_hdr. wireguard-go's
+// tun.CreateTUN always creates the device with IFF_VNET_HDR, which makes the
+// kernel prepend this header to every packet read from the device AND expect
+// it in front of every packet written back. tun.Device.Write therefore
+// requires the packet to be supplied at a nonzero offset with that much
+// scratch space in front (it zeroes the scratch bytes into the on-wire
+// header; see handleGRO in wireguard-go's tun/offload_linux.go). Passing
+// offset=0 makes every Write fail with "invalid offset" and silently drops
+// the whole kernel-return path of the TUN — the stack emits SYN-ACKs and
+// DNS replies into the void, apps never complete a connection, and with the
+// DNS hijack active the machine looks entirely offline.
+const virtioNetHdrLen = 10
+
+// packForWrite copies a raw IP packet into a buffer that wireguard-go's
+// tun.Device.Write accepts for an IFF_VNET_HDR device: virtioNetHdrLen
+// scratch bytes in front, the packet starting at [virtioNetHdrLen:]. The
+// returned offset is the value Write expects.
+func packForWrite(pkt []byte) ([]byte, int) {
+	buf := make([]byte, virtioNetHdrLen+len(pkt))
+	copy(buf[virtioNetHdrLen:], pkt)
+	return buf, virtioNetHdrLen
 }
 
 // Stack bridges the TUN device into a gvisor userspace TCP/IP stack and
@@ -95,6 +119,19 @@ func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 	if err := ns.CreateNIC(s.nicID, s.ep); err != nil {
 		return nil, fmt.Errorf("gvisor create NIC: %v", err)
 	}
+	// Spoofing must be ON: app traffic captured by policy routing leaves the
+	// kernel with the TUN's own address as its source (the route leaves via
+	// sscli0, so source-address selection picks 198.18.0.1). The reply's
+	// source is the app's original destination, which the stack only knows as
+	// a temporary address. Without spoofing, the handshake's route lookup for
+	// (src=<app-dst>, dst=198.18.0.1) fails with "no route to host" and no
+	// SYN-ACK is ever emitted: every captured connection hangs in SYN-SENT
+	// (observed live: rx stays 0, no debug logs, no eth0 egress). Spoofing
+	// makes the stack accept/answer for any address — the standard gvisor
+	// mechanism for transparent proxying stacks.
+	if err := ns.SetSpoofing(s.nicID, true); err != nil {
+		return nil, fmt.Errorf("gvisor enable spoofing: %v", err)
+	}
 	tunAddr := parsePrefixAddr(dev.tunAddress)
 	if tunAddr.IsValid() {
 		pa := tcpip.ProtocolAddress{
@@ -138,10 +175,32 @@ func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 
 	s.s = ns
 
-	s.wg.Add(2)
+	s.wg.Add(3)
 	go s.pumpTUNToStack(ctx)
 	go s.pumpStackToTUN(ctx)
+	go s.monitorTUN(ctx)
 	return s, nil
+}
+
+// monitorTUN drains wireguard-go's device event channel. The device's
+// background netlink/hack listeners block once the channel (capacity 5)
+// fills; draining keeps them responsive. Events are surfaced in debug logs.
+func (s *Stack) monitorTUN(ctx context.Context) {
+	defer s.wg.Done()
+	events := s.dev.dev.Events()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if debugEnabled() {
+				fmt.Printf("[sscli][debug] tun event: %v\n", ev)
+			}
+		}
+	}
 }
 
 // Close stops the pumps and releases the stack.
@@ -155,13 +214,34 @@ func (s *Stack) Close() {
 }
 
 // pumpTUNToStack reads IP packets from the kernel TUN and injects them into
-// the gvisor link endpoint. The wireguard/tun device uses a batch API; we
-// read one packet at a time, which is plenty for a CLI proxy.
+// the gvisor link endpoint.
+//
+// The read is a batch API: with IFF_VNET_HDR + TUNSETOFFLOAD (both always
+// enabled by wireguard-go's tun.CreateTUN), the kernel may coalesce an
+// application's TCP burst into ONE GSO "superpacket" (up to ~64 KB, many
+// MSS segments). wireguard-go's Read segments it via gsoSplit, which needs
+// one output buffer per segment — we hand it BatchSize buffers. This is not
+// optional: with a single buffer, every multi-segment GSO packet made
+// Read fail with "too many segments" and the pump exited permanently,
+// blackholing the whole TUN after the first data burst.
+//
+// BatchSize can still be exceeded for pathological superpackets; that error
+// is a partial-read signal, not a device failure: drop and keep going
+// (wireguard-go's own device loop does the same).
 func (s *Stack) pumpTUNToStack(ctx context.Context) {
 	defer s.wg.Done()
-	bufs := make([][]byte, 1)
-	bufs[0] = make([]byte, 65536)
-	sizes := make([]int, 1)
+	batch := s.dev.dev.BatchSize()
+	if batch < 1 {
+		batch = 1
+	}
+	if batch > 64 { // a 64 KB GSO superpacket needs <= 45 MSS segments
+		batch = 64
+	}
+	bufs := make([][]byte, batch)
+	for i := range bufs {
+		bufs[i] = make([]byte, 65536)
+	}
+	sizes := make([]int, batch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -170,25 +250,35 @@ func (s *Stack) pumpTUNToStack(ctx context.Context) {
 		}
 		n, err := s.dev.dev.Read(bufs, sizes, 0)
 		if err != nil {
+			if err == tun.ErrTooManySegments {
+				if debugEnabled() {
+					fmt.Printf("[sscli][debug] tun read: dropped oversized GSO packet: %v\n", err)
+				}
+				continue
+			}
+			if ctx.Err() == nil {
+				fmt.Printf("[sscli] warning: TUN read stopped: %v\n", err)
+			}
 			return // device closed
 		}
-		_ = n
-		pkt := bufs[0][:sizes[0]]
-		if len(pkt) == 0 {
-			continue
+		for i := 0; i < n; i++ {
+			pkt := bufs[i][:sizes[i]]
+			if len(pkt) == 0 {
+				continue
+			}
+			proto := networkProto(pkt)
+			if proto == 0 {
+				continue // not an IPv4/IPv6 packet
+			}
+			var payload buffer.Buffer
+			payload.Append(buffer.NewViewWithData(append([]byte(nil), pkt...)))
+			pb := stack.NewPacketBuffer(stack.PacketBufferOptions{
+				ReserveHeaderBytes: int(s.ep.MaxHeaderLength()),
+				Payload:            payload,
+			})
+			s.ep.InjectInbound(proto, pb)
+			pb.DecRef()
 		}
-		proto := networkProto(pkt)
-		if proto == 0 {
-			continue // not an IPv4/IPv6 packet
-		}
-		var payload buffer.Buffer
-		payload.Append(buffer.NewViewWithData(append([]byte(nil), pkt...)))
-		pb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			ReserveHeaderBytes: int(s.ep.MaxHeaderLength()),
-			Payload:            payload,
-		})
-		s.ep.InjectInbound(proto, pb)
-		pb.DecRef()
 	}
 }
 
@@ -202,7 +292,10 @@ func (s *Stack) pumpStackToTUN(ctx context.Context) {
 		}
 		out := pkt.ToView().ToSlice()
 		if len(out) > 0 {
-			_, _ = s.dev.dev.Write([][]byte{out}, 0)
+			buf, offset := packForWrite(out)
+			if _, err := s.dev.dev.Write([][]byte{buf}, offset); err != nil && debugEnabled() {
+				fmt.Printf("[sscli][debug] tun write: %v\n", err)
+			}
 		}
 		pkt.DecRef()
 	}
