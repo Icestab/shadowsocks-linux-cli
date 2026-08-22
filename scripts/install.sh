@@ -52,8 +52,12 @@ else
 fi
 
 step "2/6 准备 sslocal"
+BUNDLED="$PROJECT_ROOT/bin/sslocal"
 CACHED="$PROJECT_ROOT/.toolchain/ss-rust/sslocal"
-if [ -x "$CACHED" ]; then
+if [ -x "$BUNDLED" ]; then
+    echo "    使用发布包内置的 sslocal: $BUNDLED"
+    SSLOCAL_SRC="$BUNDLED"
+elif [ -x "$CACHED" ]; then
     echo "    使用已缓存的预编译 sslocal: $CACHED"
     SSLOCAL_SRC="$CACHED"
 else
@@ -108,8 +112,22 @@ else
     echo "    配置: $CONF_DST"
 fi
 
-step "5/6 下载分流规则"
-"$SSCLI_SRC" --config "$CONF_DST" update
+step "5/6 安装分流规则"
+BUNDLED_RULES="$PROJECT_ROOT/rules"
+if [ -d "$BUNDLED_RULES" ] && [ -e "$BUNDLED_RULES/gfw.list" ]; then
+    # 发布包内置了打包时点的规则基线：先落盘，保证离线也能立即使用。
+    if [ "$USE_SUDO" = "sudo" ]; then
+        $USE_SUDO cp "$BUNDLED_RULES/"*.list "$ETC/rules/"
+    else
+        mkdir -p "$(dirname "$CONF_DST")/rules"
+        cp "$BUNDLED_RULES/"*.list "$(dirname "$CONF_DST")/rules/"
+    fi
+    echo "    已安装包内规则基线，尝试在线刷新..."
+fi
+# 在线刷新到最新；失败不回滚（离线场景有上面的基线兜底）。
+if ! "$SSCLI_SRC" --config "$CONF_DST" update; then
+    echo "    在线更新失败——继续使用已安装的规则（不影响使用）。"
+fi
 
 step "6/6 自检"
 "$SSCLI_SRC" --config "$CONF_DST" test || true
