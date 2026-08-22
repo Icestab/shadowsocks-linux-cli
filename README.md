@@ -32,7 +32,15 @@ Linux / WSL
 
 ## 安装
 
-### 方式一：下载发布包（推荐，无需 Go 环境）
+### 方式一：一条命令（推荐）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/master/scripts/install-remote.sh | bash
+```
+
+自动完成：解析最新版本 → 下载对应架构的 Release 包 → SHA256 校验 → 安装 sscli/sslocal/规则 → 生成配置模板。可选环境变量：`SS_VERSION=v0.1.1`、`PREFIX=~/.local`。
+
+### 方式二：下载发布包（无需 Go 环境）
 
 从 [GitHub Releases](https://github.com/Icestab/shadowsocks-linux-cli/releases) 下载对应架构的 `sscli-v<版本>-linux-<架构>.tar.xz`（附 `.sha256` 校验文件）。
 
@@ -44,7 +52,7 @@ tar xJf sscli-v0.1.1-linux-x86_64.tar.xz && cd sscli-v0.1.1-linux-x86_64
 sudo ./install.sh     # 离线完成部署，随后自动尝试在线刷新规则到最新
 ```
 
-### 方式二：源码一键安装
+### 方式三：源码安装
 
 ```bash
 ./scripts/install.sh
