@@ -163,7 +163,29 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 		undo: []string{"route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)},
 		desc: "tun default route",
 	})
+	// 4b. IPv6 default into the TUN as well. The lookup rules are installed
+	// for both families, but without a v6 default in our table the v6
+	// lookup fails and falls back to the MAIN table: on any machine with
+	// global IPv6, foreign v6 traffic would egress directly, silently
+	// bypassing the proxy (a leak). Skipped when the kernel has no IPv6 at
+	// all (then no v6 traffic can exist to leak).
+	if ipv6Available() {
+		args := []string{"-6", "route", "add", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)}
+		undo := []string{"-6", "route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)}
+		if err := runOK(args...); err != nil {
+			m.Rollback()
+			return fmt.Errorf("add tun default route (v6): %w", err)
+		}
+		m.applied = append(m.applied, op{undo: undo, desc: "tun default route (v6)"})
+	}
 	return nil
+}
+
+// ipv6Available probes whether the kernel has IPv6 enabled at all (the
+// `ip -6` machinery fails with "Operation not supported" when the IPv6
+// module is absent).
+func ipv6Available() bool {
+	return exec.Command("ip", "-6", "addr", "show").Run() == nil
 }
 
 func privateRulePriority(cidr string) string {
@@ -232,7 +254,11 @@ func (m *Manager) Teardown() error {
 		record(run(append(fam, "rule", "del", "to", cidr, "lookup", "main",
 			"priority", privateRulePriority(cidr))...))
 	}
+	// v4 默认路由清扫（v6 由 Rollback 记录回滚；无 v6 内核时 ip -6 报错属于正常，含在 best-effort 内）。
 	record(run("route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
+	if ipv6Available() {
+		record(run("-6", "route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
+	}
 	return firstErr
 }
 
