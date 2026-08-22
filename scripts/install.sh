@@ -3,12 +3,12 @@
 #
 # 用法:
 #   ./scripts/install.sh            # 安装到 /usr/local，配置放 /etc/sscli
-#   PREFIX=~/.local ./scripts/install.sh   # 用户级安装（无 systemd 部分）
+#   PREFIX=~/.local ./scripts/install.sh   # 用户级安装（无需 root，装到 ~/.local）
 #
 # 完成内容:
 #   1. 构建 sscli
 #   2. 安装 sslocal（优先复用 .toolchain/ss-rust 缓存，否则从 GitHub 下载）
-#   3. 安装二进制与 systemd 服务单元
+#   3. 安装二进制到系统路径
 #   4. 生成交互式配置模板
 #   5. 下载分流规则
 set -euo pipefail
@@ -66,11 +66,6 @@ fi
 step "3/6 安装文件到 $PREFIX"
 $USE_SUDO install -Dm755 bin/sscli "$PREFIX/bin/sscli"
 $USE_SUDO install -Dm755 "$SSLOCAL_SRC" "$PREFIX/bin/sslocal"
-if systemctl --version >/dev/null 2>&1; then
-    $USE_SUDO install -Dm644 systemd/sscli.service "$PREFIX/lib/systemd/system/sscli.service"
-    $USE_SUDO systemctl daemon-reload 2>/dev/null || true
-    echo "    systemd 单元: $PREFIX/lib/systemd/system/sscli.service"
-fi
 
 step "4/6 生成配置"
 CONF_SRC="$HOME/.config/sscli/config.yaml"
@@ -110,5 +105,5 @@ cat <<EOF
      (server.address / port / method / password)
   2. 再次自检确认:     $PREFIX/bin/sscli test
   3. 启动:             sudo sscli start
-     或 systemd:       sudo systemctl enable --now sscli
+     停止:             sudo sscli stop（任何方式退出都会自动恢复网络）
 EOF

@@ -36,9 +36,9 @@ Linux / WSL
 ./scripts/install.sh
 ```
 
-脚本自动完成：构建 sscli → 下载官方预编译 sslocal → 安装二进制与 systemd 服务 → 生成 `/etc/sscli/config.yaml` 配置模板（0600）→ 下载分流规则 → 运行自检。装完只需编辑配置里的服务器信息即可 `sudo sscli start`。
+脚本自动完成：构建 sscli → 下载官方预编译 sslocal（SHA256 校验）→ 安装二进制 → 生成 `/etc/sscli/config.yaml` 配置模板（0600）→ 下载分流规则 → 运行自检。装完只需编辑配置里的服务器信息即可 `sudo sscli start`。
 
-用户级安装（不需要 sudo，无 systemd）：`PREFIX=~/.local ./scripts/install.sh`
+用户级安装（不需要 root）：`PREFIX=~/.local ./scripts/install.sh`
 
 ### 手动安装
 
@@ -46,7 +46,7 @@ Linux / WSL
 
 ```bash
 git clone <repo> && cd shadowsocks-linux-cli
-./scripts/install.sh          # 构建并安装到 /usr/local/bin + systemd
+./scripts/install.sh          # 构建并安装到 /usr/local/bin
 # 或仅构建：
 go build -o bin/sscli ./cmd/sscli
 ```
@@ -112,13 +112,6 @@ sscli update                  # 更新 GFW List / 中国域名 / 中国 IP 规�
 sudo sscli stop               # 停止并恢复网络
 ```
 
-systemd 方式：
-
-```bash
-sudo systemctl enable --now sscli
-journalctl -u sscli -f
-```
-
 ### 权限说明
 
 只有 `start`/`stop`/`restart` 需要 root（TUN 与策略路由是 `CAP_NET_ADMIN` 特权操作）。`mode`、`route`、`dns`、`update`、`test`、`status`、`config` 均可普通用户执行。
@@ -159,7 +152,7 @@ go test ./...                 # 单元测试（规则引擎/DNS/SS链路/路由�
 - DNS 分流解析器 + TTL 域名映射表
 - 三种模式（真实规则数据验证符合验收矩阵）
 - 规则下载/校验/原子替换
-- systemd 单元（含沙箱加固）
+- 信号处理与网络状态恢复：SIGINT/SIGTERM/SIGHUP 全量清理，`sscli stop` 幂等可清扫崩溃残留（不依赖 systemd，手动管理为唯一方式）
 
 ### 未实现（第一阶段明确不做）
 
