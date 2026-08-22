@@ -100,21 +100,29 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 		return nil
 	}
 
-	// 1. sscli's own marked sockets escape the TUN.
-	if err := install(
-		[]string{"rule", "add", "fwmark", fmt.Sprintf("%#x", m.Fwmark), "lookup", "main", "priority", "100"},
-		[]string{"rule", "del", "fwmark", fmt.Sprintf("%#x", m.Fwmark), "lookup", "main", "priority", "100"},
-		"fwmark bypass rule"); err != nil {
-		m.Rollback()
-		return err
+	// 1. sscli's own marked sockets escape the TUN. Policy rules are
+	// per-address-family, so install for both v4 and v6.
+	for _, fam := range [][]string{{}, {"-6"}} {
+		args := append(append([]string{}, fam...),
+			"rule", "add", "fwmark", fmt.Sprintf("%#x", m.Fwmark), "lookup", "main", "priority", "100")
+		undo := append(append([]string{}, fam...),
+			"rule", "del", "fwmark", fmt.Sprintf("%#x", m.Fwmark), "lookup", "main", "priority", "100")
+		if err := install(args, undo, "fwmark bypass rule"); err != nil {
+			m.Rollback()
+			return err
+		}
 	}
 	// 2. Private/LAN ranges always use MAIN (requirement: LAN 直连).
+	// ip rule is family-scoped: IPv6 CIDRs must go through `ip -6 rule`.
 	for _, cidr := range rules.PrivateCIDRs {
+		fam := []string{"-6"}
+		if !strings.Contains(cidr, ":") {
+			fam = nil
+		}
 		prio := privateRulePriority(cidr)
-		if err := install(
-			[]string{"rule", "add", "to", cidr, "lookup", "main", "priority", prio},
-			[]string{"rule", "del", "to", cidr, "lookup", "main", "priority", prio},
-			"private bypass "+cidr); err != nil {
+		args := append(append([]string{}, fam...), "rule", "add", "to", cidr, "lookup", "main", "priority", prio)
+		undo := append(append([]string{}, fam...), "rule", "del", "to", cidr, "lookup", "main", "priority", prio)
+		if err := install(args, undo, "private bypass "+cidr); err != nil {
 			m.Rollback()
 			return err
 		}
@@ -137,12 +145,15 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 		}
 	}
 	// 4. Everything else consults our table whose default is the TUN.
-	if err := install(
-		[]string{"rule", "add", "lookup", fmt.Sprint(m.Table), "priority", "10000"},
-		[]string{"rule", "del", "lookup", fmt.Sprint(m.Table)},
-		"tun lookup rule"); err != nil {
-		m.Rollback()
-		return err
+	for _, fam := range [][]string{{}, {"-6"}} {
+		args := append(append([]string{}, fam...),
+			"rule", "add", "lookup", fmt.Sprint(m.Table), "priority", "10000")
+		undo := append(append([]string{}, fam...),
+			"rule", "del", "lookup", fmt.Sprint(m.Table))
+		if err := install(args, undo, "tun lookup rule"); err != nil {
+			m.Rollback()
+			return err
+		}
 	}
 	if err := runOK("route", "add", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)); err != nil {
 		m.Rollback()
@@ -206,8 +217,21 @@ func (m *Manager) Teardown() error {
 	}
 	m.Rollback()
 	// Sweep leftovers regardless of m.applied state (crash recovery).
-	record(run("rule", "del", "fwmark", fmt.Sprintf("%#x", m.Fwmark)))
-	record(run("rule", "del", "lookup", fmt.Sprint(m.Table)))
+	for _, fam := range [][]string{{"-6"}, {}} {
+		record(run(append(append([]string{}, fam...),
+			"rule", "del", "fwmark", fmt.Sprintf("%#x", m.Fwmark))...))
+		record(run(append(append([]string{}, fam...),
+			"rule", "del", "lookup", fmt.Sprint(m.Table))...))
+	}
+	// 私有网段豁免也按族清扫。
+	for _, cidr := range rules.PrivateCIDRs {
+		fam := []string{"-6"}
+		if !strings.Contains(cidr, ":") {
+			fam = nil
+		}
+		record(run(append(fam, "rule", "del", "to", cidr, "lookup", "main",
+			"priority", privateRulePriority(cidr))...))
+	}
 	record(run("route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
 	return firstErr
 }
