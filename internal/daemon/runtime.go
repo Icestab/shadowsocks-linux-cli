@@ -17,6 +17,7 @@ import (
 
 	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
 	"github.com/Icestab/shadowsocks-linux-cli/internal/dns"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/logrotate"
 	"github.com/Icestab/shadowsocks-linux-cli/internal/network"
 	"github.com/Icestab/shadowsocks-linux-cli/internal/proxy"
 	"github.com/Icestab/shadowsocks-linux-cli/internal/router"
@@ -286,6 +287,7 @@ func daemonize() error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
 		return err
 	}
+	logrotate.MaybeRotate(logPath) // 每次启动轮转，防止日志无限涨盘
 	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
@@ -399,10 +401,19 @@ func shutdown(rt *Runtime) {
 // domain), IPv4 first. The first element is the primary sslocal dials; the
 // full set is pinned in the router and routed around the TUN so a
 // round-robin server can never feed a loop.
+//
+// Domain resolution happens over DoH first (privacy): the VPS name would
+// otherwise hit the local/ISP resolver in plaintext once at every start.
+// Only when every DoH endpoint fails do we fall back to the system
+// resolver, with a warning.
 func resolveServerIPs(addr string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(addr); err == nil {
 		return []netip.Addr{ip}, nil
 	}
+	if addrs, err := resolveViaDoH(context.Background(), defaultDoHEndpoints, addr); err == nil && len(addrs) > 0 {
+		return prioritizeAddrs(addrs)
+	}
+	fmt.Println("warning: DoH bootstrap unavailable, resolving server via system DNS (one plaintext query to your configured resolver)")
 	ips, err := net.LookupIP(addr)
 	if err != nil || len(ips) == 0 {
 		return nil, fmt.Errorf("no address for %q", addr)
@@ -413,14 +424,23 @@ func resolveServerIPs(addr string) ([]netip.Addr, error) {
 // prioritizeIPs converts a net.LookupIP result into deduplicated netip
 // addresses, ordered IPv4 first.
 func prioritizeIPs(ips []net.IP) ([]netip.Addr, error) {
+	addrs := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			addrs = append(addrs, a.Unmap())
+		}
+	}
+	return prioritizeAddrs(addrs)
+}
+
+// prioritizeAddrs dedupes and orders IPv4 first.
+func prioritizeAddrs(addrs []netip.Addr) ([]netip.Addr, error) {
 	var v4, v6 []netip.Addr
 	seen := make(map[netip.Addr]struct{})
-	for _, ip := range ips {
-		a, ok := netip.AddrFromSlice(ip)
-		if !ok {
+	for _, a := range addrs {
+		if !a.IsValid() || a.IsUnspecified() {
 			continue
 		}
-		a = a.Unmap()
 		if _, dup := seen[a]; dup {
 			continue
 		}
@@ -469,10 +489,47 @@ func isRunning() (bool, int) {
 	if err != nil {
 		return false, 0
 	}
-	// Signal 0 probes liveness without delivering anything.
-	if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
+	// Signal 0 probes liveness without delivering anything — but a pid in
+	// the file can also be an UNRELATED process that reused the number
+	// after a crash. Verify identity before ever signaling it.
+	if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil && pidIsSSCLI(pid) {
 		return true, pid
 	}
-	os.Remove(d + "/sscli.pid") //nolint:errcheck // stale
+	os.Remove(d + "/sscli.pid") //nolint:errcheck // stale (or foreign) pid
 	return false, 0
+}
+
+// pidIsSSCLI reports whether pid belongs to an sscli process by comparing
+// its /proc/<pid>/exe with our own executable (the daemonized child
+// re-execs this very binary). Guards Stop/isRunning against signaling an
+// innocent process that reused a stale pid. A replaced binary shows
+// " (deleted)" on a still-running process — strip it before comparing.
+func pidIsSSCLI(pid int) bool {
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return false
+	}
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	if filepath.Clean(exe) == filepath.Clean(self) {
+		return true
+	}
+	// Different path but the same binary (e.g. running via a symlink):
+	// compare the underlying inode as a last resort.
+	return sameInode(exe, self)
+}
+
+func sameInode(a, b string) bool {
+	ia, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ia, ib)
 }
