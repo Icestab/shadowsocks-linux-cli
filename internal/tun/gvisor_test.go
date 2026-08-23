@@ -22,12 +22,20 @@ import (
 // default route in table 5162 leaves via sscli0 and kernel source-address
 // selection picks the TUN address).
 func buildTCPSYN(src, dst netip.Addr, sport, dport uint16) []byte {
+	return buildTCPPacket(src, dst, sport, dport, 0x02 /* SYN */, 0, 0, nil)
+}
+
+// buildTCPPacket crafts a syntactically valid IPv4+TCP packet with correct
+// checksums. seq/ack/flags/payload are explicit so tests can drive a full
+// handshake (SYN -> SYN-ACK -> ACK) through the real gvisor wiring.
+func buildTCPPacket(src, dst netip.Addr, sport, dport uint16, flags byte, seq, ack uint32, payload []byte) []byte {
 	src4, dst4 := src.As4(), dst.As4()
-	pkt := make([]byte, 40)
+	total := 40 + len(payload)
+	pkt := make([]byte, total)
 
 	// IPv4 header.
 	pkt[0] = 0x45
-	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)))
+	binary.BigEndian.PutUint16(pkt[2:4], uint16(total))
 	pkt[8] = 64 // TTL
 	pkt[9] = 6  // TCP
 	copy(pkt[12:16], src4[:])
@@ -38,8 +46,10 @@ func buildTCPSYN(src, dst netip.Addr, sport, dport uint16) []byte {
 	tcpH := pkt[20:]
 	binary.BigEndian.PutUint16(tcpH[0:2], sport)
 	binary.BigEndian.PutUint16(tcpH[2:4], dport)
-	tcpH[12] = 0x50            // data offset 5
-	tcpH[13] = 0x02            // SYN
+	binary.BigEndian.PutUint32(tcpH[4:8], seq)
+	binary.BigEndian.PutUint32(tcpH[8:12], ack)
+	tcpH[12] = 0x50                    // data offset 5
+	tcpH[13] = flags                   // SYN/ACK/RST...
 	binary.BigEndian.PutUint16(tcpH[16:18], 65535) // window
 
 	// TCP checksum with pseudo-header.
@@ -48,11 +58,10 @@ func buildTCPSYN(src, dst netip.Addr, sport, dport uint16) []byte {
 	copy(pseudo[4:8], dst4[:])
 	pseudo[8] = 0
 	pseudo[9] = 6
-	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(tcpH)))
-	binary.BigEndian.PutUint16(tcpH[16:18], tcpChecksum(pseudo, tcpH))
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(tcpH)+len(payload)))
+	binary.BigEndian.PutUint16(tcpH[16:18], tcpChecksum(pseudo, append(tcpH, payload...)))
 	return pkt
 }
-
 
 func bufFromData(b []byte) buffer.Buffer {
 	var buf buffer.Buffer

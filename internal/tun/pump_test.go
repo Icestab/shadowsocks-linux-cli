@@ -73,7 +73,9 @@ func (f *fakeTUN) File() *os.File                    { return nil }
 // offline right after the first successful connection).
 func TestPumpProcessesEverySegmentOfABatchRead(t *testing.T) {
 	received := make(chan netip.AddrPort, 16)
-	ep, st := newForwarderHarness(t, received)
+	ep, st := newForwarderHarness(t, func(r *tcp.ForwarderRequest) {
+		received <- netip.AddrPortFrom(addrFromTCPIP(r.ID().LocalAddress), r.ID().LocalPort)
+	})
 	defer st.Close()
 	defer ep.Close()
 
@@ -137,8 +139,8 @@ func TestPumpProcessesEverySegmentOfABatchRead(t *testing.T) {
 }
 
 // newForwarderHarness wires a channel endpoint + spoofed promiscuous stack
-// with a forwarder whose handler only reports flows (does not handshake).
-func newForwarderHarness(t *testing.T, received chan<- netip.AddrPort) (*channel.Endpoint, *stack.Stack) {
+// with a forwarder whose handler is supplied by the caller.
+func newForwarderHarness(t *testing.T, handler func(*tcp.ForwarderRequest)) (*channel.Endpoint, *stack.Stack) {
 	t.Helper()
 	ep := channel.New(512, 1500, "")
 	st := stack.New(stack.Options{
@@ -167,9 +169,7 @@ func newForwarderHarness(t *testing.T, received chan<- netip.AddrPort) (*channel
 		t.Fatalf("NewSubnet: %v", err)
 	}
 	st.SetRouteTable([]tcpip.Route{{Destination: any4, NIC: 1}})
-	fwd := tcp.NewForwarder(st, 0, 65536, func(r *tcp.ForwarderRequest) {
-		received <- netip.AddrPortFrom(addrFromTCPIP(r.ID().LocalAddress), r.ID().LocalPort)
-	})
+	fwd := tcp.NewForwarder(st, 0, 65536, handler)
 	st.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 	return ep, st
 }
