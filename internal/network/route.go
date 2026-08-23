@@ -78,13 +78,15 @@ func (m *Manager) OriginalDefaultRoutes() ([]string, error) {
 //
 //  1. fwmark rule      : sscli's own marked sockets use MAIN (escape TUN)
 //  2. private/LAN rules: every private range keeps using MAIN (LAN 直连)
-//  3. server host-route: VPS /32 goes via the original gateway so the
-//     un-marked sslocal subprocess cannot loop
+//  3. server host-routes: EVERY resolved VPS address /32|/128 goes via the
+//     original gateway so the un-marked sslocal subprocess cannot loop —
+//     pinning only the first address would let a DNS round-robin server
+//     re-enter the TUN and loop in bypass/global mode
 //  4. lookup rule      : everything else consults TABLE -> TUN
 //
 // It assumes the caller already assigned an address to the TUN and brought
 // it up (ConfigureTUN).
-func (m *Manager) Setup(serverIP netip.Addr) error {
+func (m *Manager) Setup(serverIPs []netip.Addr) error {
 	if len(m.originalDefault) == 0 {
 		if _, err := m.OriginalDefaultRoutes(); err != nil {
 			return fmt.Errorf("snapshot original routes: %w", err)
@@ -127,19 +129,30 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 			return err
 		}
 	}
-	// 3. Server host-route through the original gateway so the unmarked
-	// sslocal subprocess cannot loop back into the TUN.
-	gw, devName, hasGW := parseDefaultRoute(m.originalDefault)
-	if serverIP.IsValid() && devName != "" {
-		var args []string
-		if hasGW {
-			args = []string{"route", "add", serverIP.String(), "via", gw, "dev", devName}
-		} else {
-			args = []string{"route", "add", serverIP.String(), "dev", devName}
+	// 3. Server host-routes through the original gateway so the unmarked
+	// sslocal subprocess cannot loop back into the TUN. One route per
+	// resolved address (IPv6 uses the IPv6 default gateway when present;
+	// with neither family default the /128 is skipped — the router pin
+	// still prevents loops).
+	gw4, dev4, hasGW4 := parseDefaultRoute(m.originalDefault)
+	gw6, dev6, hasGW6 := parseDefaultRoute(m.originalDefault6())
+	for _, ip := range serverIPs {
+		if !ip.IsValid() {
+			continue
 		}
-		if err := install(args,
-			[]string{"route", "del", serverIP.String()},
-			"sslocal server bypass"); err != nil {
+		var args, undo []string
+		if ip.Is4() {
+			if dev4 == "" {
+				continue
+			}
+			args, undo = serverRouteArgs(ip, gw4, dev4, hasGW4)
+		} else {
+			if dev6 == "" {
+				continue
+			}
+			args, undo = serverRouteArgs(ip, gw6, dev6, hasGW6)
+		}
+		if err := install(args, undo, "sslocal server bypass "+ip.String()); err != nil {
 			m.Rollback()
 			return err
 		}
@@ -221,6 +234,39 @@ func privateRulePriority(cidr string) string {
 		sum += int(b)
 	}
 	return fmt.Sprint(300 + sum%100)
+}
+
+// originalDefault6 snapshots the IPv6 default route(s), best-effort:
+// hosts without IPv6 yield nothing (and the caller then skips v6 pins).
+func (m *Manager) originalDefault6() []string {
+	out, err := exec.Command("ip", "-6", "route", "show", "default").Output()
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// serverRouteArgs builds the `ip` command (and its undo) that pins one SS
+// server address to the original default path. IPv4 addresses use the main
+// table via the IPv4 gateway; IPv6 addresses go through `ip -6` via the
+// IPv6 gateway (on-link when the default route has no gateway).
+func serverRouteArgs(ip netip.Addr, gw, dev string, hasGW bool) (install, undo []string) {
+	install = []string{"route", "add", ip.String()}
+	undo = []string{"route", "del", ip.String()}
+	if !ip.Is4() {
+		install = append([]string{"-6"}, install...)
+		undo = append([]string{"-6"}, undo...)
+	}
+	if hasGW {
+		install = append(install, "via", gw)
+	}
+	return append(install, "dev", dev), undo
 }
 
 // parseDefaultRoute extracts "via GW dev DEV" from `ip route show default`.

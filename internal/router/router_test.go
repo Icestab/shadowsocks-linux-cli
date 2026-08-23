@@ -72,6 +72,28 @@ func TestServerIPAlwaysDirect(t *testing.T) {
 	}
 }
 
+func TestAllServerIPsAlwaysDirect(t *testing.T) {
+	// A DNS round-robin VPS answers several A records; EVERY resolved
+	// address must be pinned DIRECT. Pinning only the first would let
+	// connections to the others re-enter the TUN and be re-decided PROXY
+	// in bypass/global mode — looping back into sslocal forever.
+	mapping := dns.NewMapping(0, 0)
+	e := rules.NewEngine(rules.ModeBypass)
+	srvA := netip.MustParseAddr("18.139.140.0")
+	srvB := netip.MustParseAddr("18.139.141.7")
+	r := New(e, mapping, countingDialer{}, countingDialer{}, srvA, srvB)
+	for _, srv := range []netip.Addr{srvA, srvB} {
+		dec, _, level := r.DecisionFor(srv.String() + ":27314")
+		if dec != rules.Direct || level != "server-bypass" {
+			t.Errorf("server %s = %v/%q, want DIRECT/server-bypass", srv, dec, level)
+		}
+	}
+	// A neighbouring address is NOT pinned (bypass default = PROXY).
+	if dec, _, _ := r.DecisionFor("18.139.140.1:27314"); dec != rules.Proxy {
+		t.Errorf("non-server address = %v, want PROXY (bypass default)", dec)
+	}
+}
+
 func TestDialUsesSelectedPath(t *testing.T) {
 	mapping := dns.NewMapping(0, 0)
 	e := rules.NewEngine(rules.ModeBypass)

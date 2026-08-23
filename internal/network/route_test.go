@@ -1,7 +1,9 @@
 package network
 
 import (
+	"net/netip"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -70,5 +72,51 @@ func TestOutputHasGlobalIPv6(t *testing.T) {
 		if got := outputHasGlobalIPv6(c.out); got != c.want {
 			t.Errorf("%s: outputHasGlobalIPv6 = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestServerRouteArgs(t *testing.T) {
+	v4 := netip.MustParseAddr("18.139.140.0")
+	v6 := netip.MustParseAddr("2600:1f18:1:2::5")
+	cases := []struct {
+		name  string
+		ip    netip.Addr
+		gw    string
+		dev   string
+		hasGW bool
+		wantI []string
+		wantU []string
+	}{
+		{
+			"v4 via gateway", v4, "172.31.0.1", "eth0", true,
+			[]string{"route", "add", "18.139.140.0", "via", "172.31.0.1", "dev", "eth0"},
+			[]string{"route", "del", "18.139.140.0"},
+		},
+		{
+			"v4 on-link", v4, "", "eth0", false,
+			[]string{"route", "add", "18.139.140.0", "dev", "eth0"},
+			[]string{"route", "del", "18.139.140.0"},
+		},
+		{
+			"v6 via gateway", v6, "fe80::1", "eth0", true,
+			[]string{"-6", "route", "add", "2600:1f18:1:2::5", "via", "fe80::1", "dev", "eth0"},
+			[]string{"-6", "route", "del", "2600:1f18:1:2::5"},
+		},
+		{
+			"v6 on-link", v6, "", "eth0", false,
+			[]string{"-6", "route", "add", "2600:1f18:1:2::5", "dev", "eth0"},
+			[]string{"-6", "route", "del", "2600:1f18:1:2::5"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotI, gotU := serverRouteArgs(c.ip, c.gw, c.dev, c.hasGW)
+			if !reflect.DeepEqual(gotI, c.wantI) {
+				t.Errorf("install args = %v, want %v", gotI, c.wantI)
+			}
+			if !reflect.DeepEqual(gotU, c.wantU) {
+				t.Errorf("undo args = %v, want %v", gotU, c.wantU)
+			}
+		})
 	}
 }

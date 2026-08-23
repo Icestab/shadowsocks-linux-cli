@@ -52,11 +52,12 @@ type sslocalConfig struct {
 	TCPRelayOnly bool   `json:"-"`
 }
 
-// StartIP is set by the daemon to the server address resolved BEFORE any
-// routing/DNS changes. When present it replaces the configured domain in
-// sslocal's temp config — otherwise sslocal would resolve the domain via
-// DNS, which (once our hijack is active) flows back through sslocal
-// itself: a bootstrap deadlock that blackholes all traffic.
+// StartIP is set by the daemon to the PRIMARY server address (first
+// resolved one) BEFORE any routing/DNS changes. When present it replaces
+// the configured domain in sslocal's temp config — otherwise sslocal would
+// resolve the domain via DNS, which (once our hijack is active) flows back
+// through sslocal itself: a bootstrap deadlock that blackholes all
+// traffic. Other resolved addresses are pinned in the router instead.
 var StartIP string
 
 // sslocalDropUID/GID: the sslocal child runs with least privilege — it

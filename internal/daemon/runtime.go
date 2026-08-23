@@ -127,8 +127,11 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	rt.cancel = cancel
 
 	// 1. Resolve server address BEFORE any routing changes (system DNS is
-	// still usable now; after hijack it may not be).
-	serverIP, err := resolveServerIP(cfg.Server.Address)
+	// still usable now; after hijack it may not be). ALL addresses are
+	// pinned (a DNS round-robin server would otherwise loop: an unpinned
+	// address re-enters the TUN and bypass/global mode re-decides it
+	// PROXY -> back into sslocal forever).
+	serverIPs, err := resolveServerIPs(cfg.Server.Address)
 	if err != nil {
 		return rt, fmt.Errorf("resolve server: %w", err)
 	}
@@ -143,10 +146,12 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	if d, err := StateDir(); err == nil {
 		os.Setenv("SSCLI_SSLOCAL_LOG", filepath.Join(d, "sslocal.log"))
 	}
-	// Pin the resolved IP so sslocal never needs DNS for the VPS name:
-	// once the hijack is active that resolution would route back through
-	// sslocal itself and deadlock the whole data plane.
-	proxy.StartIP = serverIP.String()
+	// Pin the resolved primary IP so sslocal never needs DNS for the VPS
+	// name: once the hijack is active that resolution would route back
+	// through sslocal itself and deadlock the whole data plane. sslocal's
+	// config takes a single address; the remaining addresses are still
+	// pinned in the router and the host routes below.
+	proxy.StartIP = serverIPs[0].String()
 	rt.sslocal = proxy.NewSslocal(cfg)
 	if err := rt.sslocal.Start(); err != nil {
 		return rt, err
@@ -165,7 +170,7 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	// 5. Policy routing with loop-prevention exceptions + DNS hijack
 	// (redirects local :53 into our resolver so the domain->IP mapping
 	// fills even when the system resolver sits on a private address).
-	if err := rt.nm.Setup(serverIP); err != nil {
+	if err := rt.nm.Setup(serverIPs); err != nil {
 		return rt, err
 	}
 	if cfg.DNS.Enabled {
@@ -195,7 +200,7 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	dnsSrv := dns.NewServer(resolver, engine)
 
 	dd := &proxy.DirectDialer{}
-	r := router.New(engine, mapping, pd, dd, serverIP)
+	r := router.New(engine, mapping, pd, dd, serverIPs...)
 
 	// 8. gvisor userspace stack bridging the TUN into the router.
 	st, err := tun.NewStack(rt.dev, router.NewFlowAdapter(r, dnsSrv))
@@ -390,25 +395,47 @@ func shutdown(rt *Runtime) {
 	}
 }
 
-// resolveServerIP returns the IP of the SS server (literal or domain).
-func resolveServerIP(addr string) (netip.Addr, error) {
+// resolveServerIPs returns every address of the SS server (literal or
+// domain), IPv4 first. The first element is the primary sslocal dials; the
+// full set is pinned in the router and routed around the TUN so a
+// round-robin server can never feed a loop.
+func resolveServerIPs(addr string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(addr); err == nil {
-		return ip, nil
+		return []netip.Addr{ip}, nil
 	}
 	ips, err := net.LookupIP(addr)
 	if err != nil || len(ips) == 0 {
-		return netip.Addr{}, fmt.Errorf("no address for %q", addr)
+		return nil, fmt.Errorf("no address for %q", addr)
 	}
+	return prioritizeIPs(ips)
+}
+
+// prioritizeIPs converts a net.LookupIP result into deduplicated netip
+// addresses, ordered IPv4 first.
+func prioritizeIPs(ips []net.IP) ([]netip.Addr, error) {
+	var v4, v6 []netip.Addr
+	seen := make(map[netip.Addr]struct{})
 	for _, ip := range ips {
-		if ip.To4() != nil {
-			a, ok := netip.AddrFromSlice(ip.To4())
-			if ok {
-				return a, nil
-			}
+		a, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			continue
+		}
+		a = a.Unmap()
+		if _, dup := seen[a]; dup {
+			continue
+		}
+		seen[a] = struct{}{}
+		if a.Is4() {
+			v4 = append(v4, a)
+		} else {
+			v6 = append(v6, a)
 		}
 	}
-	a, _ := netip.AddrFromSlice(ips[0])
-	return a, nil
+	all := append(v4, v6...)
+	if len(all) == 0 {
+		return nil, fmt.Errorf("server address resolved to no usable IPs")
+	}
+	return all, nil
 }
 
 func writePid() (int, error) {

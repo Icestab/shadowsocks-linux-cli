@@ -23,28 +23,37 @@ type Router struct {
 	proxyDialer  proxy.Dialer
 	directDialer proxy.Dialer
 
-	// serverIP is the resolved Shadowsocks server address. Traffic to it is
-	// always DIRECT: the un-marked sslocal subprocess is captured by the
-	// TUN policy routing ("everything else -> TUN"), and if its own
-	// connection to the VPS were re-decided PROXY (e.g. the bypass/global
-	// mode default, or a mapping entry carrying the server's domain), it
-	// would loop back into sslocal forever.
-	serverIP netip.Addr
+	// serverIPs pins EVERY address the SS server may resolve to (the VPS
+	// may answer several A records). Traffic to any of them is always
+	// DIRECT: the un-marked sslocal subprocess is captured by the TUN
+	// policy routing ("everything else -> TUN"), and if its own connection
+	// to the VPS were re-decided PROXY (e.g. the bypass/global mode
+	// default, or a mapping entry carrying the server's domain), it would
+	// loop back into sslocal forever. Missing a round-robin IP from the
+	// pin set reintroduces exactly that loop, so the whole resolver answer
+	// is pinned, not just the first address.
+	serverIPs map[netip.Addr]struct{}
 }
 
-// New wires a router from an engine and the two outbound paths. serverIP is
-// the SS server address resolved before routing changes; pass an invalid
-// Addr to disable the VPS loop-prevention pin.
-func New(engine *rules.Engine, mapping *dns.Mapping, proxyDialer, directDialer proxy.Dialer, serverIP netip.Addr) *Router {
+// New wires a router from an engine and the two outbound paths. serverIPs
+// are the SS server addresses resolved before routing changes (pass none to
+// disable the VPS loop-prevention pin).
+func New(engine *rules.Engine, mapping *dns.Mapping, proxyDialer, directDialer proxy.Dialer, serverIPs ...netip.Addr) *Router {
 	if directDialer == nil {
 		directDialer = &proxy.DirectDialer{}
+	}
+	pins := make(map[netip.Addr]struct{}, len(serverIPs))
+	for _, ip := range serverIPs {
+		if ip.IsValid() && !ip.IsUnspecified() {
+			pins[ip] = struct{}{}
+		}
 	}
 	return &Router{
 		engine:       engine,
 		mapping:      mapping,
 		proxyDialer:  proxyDialer,
 		directDialer: directDialer,
-		serverIP:     serverIP,
+		serverIPs:    pins,
 	}
 }
 
@@ -61,11 +70,13 @@ func (r *Router) DecisionFor(addr string) (rules.Decision, string, string) {
 		host = addr
 	}
 	ip := parseHostIP(host)
-	// The SS server address is pinned DIRECT before any rule evaluation
+	// Any SS server address is pinned DIRECT before any rule evaluation
 	// (loop prevention; see New). This also covers the case where the DNS
 	// mapping recorded the server's domain for its IP.
-	if ip.IsValid() && r.serverIP.IsValid() && ip == r.serverIP {
-		return rules.Direct, "", "server-bypass"
+	if ip.IsValid() {
+		if _, ok := r.serverIPs[ip]; ok {
+			return rules.Direct, "", "server-bypass"
+		}
 	}
 	domain := ""
 	if !ip.IsValid() || ip.IsUnspecified() {
