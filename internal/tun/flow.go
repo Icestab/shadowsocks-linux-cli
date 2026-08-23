@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -86,9 +87,21 @@ func (s *Stack) handleUDP(ctx context.Context, r *udp.ForwarderRequest) {
 	gc := gonet.NewUDPConn(wq, ep)
 
 	if uint16(id.LocalPort) == s.dnsPort {
+		// Track the flow so Stack.Close can terminate it alongside the
+		// idle reaper (see serveDNSOverUDP).
+		s.udpMu.Lock()
+		s.udpConns[gc] = struct{}{}
+		s.udpMu.Unlock()
+		s.activeDNSFlows.Add(1)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.activeDNSFlows.Add(-1)
+			defer func() {
+				s.udpMu.Lock()
+				delete(s.udpConns, gc)
+				s.udpMu.Unlock()
+			}()
 			s.serveDNSOverUDP(ctx, gc)
 		}()
 		return
@@ -96,18 +109,36 @@ func (s *Stack) handleUDP(ctx context.Context, r *udp.ForwarderRequest) {
 	// Non-DNS UDP is out of Phase 1 scope; closing sends ICMP unreachable
 	// back into the userspace stack.
 	ep.Close()
-	_ = gc
 }
 
-// serveDNSOverUDP answers DNS queries received via the TUN until closed.
+// serveDNSOverUDP answers DNS queries received via the TUN until the flow
+// goes silent for the idle timeout or the stack closes.
+//
+// gvisor keeps a forwarder-created UDP endpoint — and therefore this
+// goroutine — alive until the owner closes it: udp.Forwarder has no idle
+// timeout. Local resolvers that open a fresh socket per query (plain glibc
+// getaddrinfo) would otherwise pin one goroutine + endpoint PER QUERY
+// forever, growing without bound for the daemon's whole lifetime. The
+// idle timer closes the conn, which wakes the blocked ReadFrom with
+// ErrClosedForReceive and ends the flow; Stack.Close does the same for
+// every live flow so shutdown is not delayed. A query racing the close is
+// simply lost — the client retries and obtains a fresh flow.
 func (s *Stack) serveDNSOverUDP(ctx context.Context, conn *gonet.UDPConn) {
 	defer conn.Close()
+	idle := s.dnsIdleTimeout
+	if idle <= 0 {
+		idle = udpDNSIdleTimeout
+	}
+	// time.AfterFunc uses the runtime timer heap, not a goroutine per flow.
+	reaper := time.AfterFunc(idle, func() { _ = conn.Close() })
+	defer reaper.Stop()
 	buf := make([]byte, 4096)
 	for {
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
 			return
 		}
+		reaper.Reset(idle)
 		resp := s.router.HandleDNS(ctx, buf[:n])
 		if resp == nil {
 			continue

@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
@@ -61,6 +64,14 @@ func packForWrite(pkt []byte) ([]byte, int) {
 // daemon's memory/fds/goroutines (local DoS).
 const maxConcurrentFlows = 4096
 
+// udpDNSIdleTimeout is how long a TUN DNS flow (one forwarder-created UDP
+// endpoint + goroutine per unique 5-tuple towards :53) may stay silent
+// before it is closed. gvisor's udp.Forwarder endpoints have NO idle
+// timeout of their own — they live until the owner closes them — and
+// plain glibc opens a fresh socket for every lookup, so without a reaper
+// every DNS query would pin a goroutine + endpoint forever.
+const udpDNSIdleTimeout = 30 * time.Second
+
 // Stack bridges the TUN device into a gvisor userspace TCP/IP stack and
 // forwards each flow through the router.
 type Stack struct {
@@ -74,6 +85,19 @@ type Stack struct {
 	// flowSlots is the admission-control semaphore: one slot per active
 	// flow, acquired on accept and released when the flow ends.
 	flowSlots chan struct{}
+
+	// udpConns tracks live forwarder-created UDP endpoints (the TUN DNS
+	// flows). Close terminates them all so shutdown is not delayed by
+	// ReadFrom loops blocked on silent flows.
+	udpMu    sync.Mutex
+	udpConns map[*gonet.UDPConn]struct{}
+
+	// dnsIdleTimeout is the per-flow silence limit of the DNS server
+	// (default udpDNSIdleTimeout; overridden in tests).
+	dnsIdleTimeout time.Duration
+
+	// activeDNSFlows counts live TUN DNS server loops.
+	activeDNSFlows atomic.Int64
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -100,12 +124,14 @@ type Conn interface {
 func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Stack{
-		dev:       dev,
-		router:    router,
-		dnsPort:   53,
-		nicID:     1,
-		flowSlots: make(chan struct{}, maxConcurrentFlows),
-		cancel:    cancel,
+		dev:            dev,
+		router:         router,
+		dnsPort:        53,
+		nicID:          1,
+		flowSlots:      make(chan struct{}, maxConcurrentFlows),
+		udpConns:       make(map[*gonet.UDPConn]struct{}),
+		dnsIdleTimeout: udpDNSIdleTimeout,
+		cancel:         cancel,
 	}
 
 	const defaultMTU = 1500
@@ -221,6 +247,16 @@ func (s *Stack) monitorTUN(ctx context.Context) {
 // s.wg.Wait() would deadlock. See daemon.shutdown for the safe order.
 func (s *Stack) Close() {
 	s.cancel()
+	// Close every forwarder-created UDP endpoint before waiting: their
+	// ReadFrom loops only end on an error (there is no deadline on a
+	// gvisor UDP endpoint), and closing the endpoint wakes the blocked
+	// read with ErrClosedForReceive. Without this, wg.Wait() would stall
+	// up to the DNS idle timeout on machines with an active DNS flow.
+	s.udpMu.Lock()
+	for c := range s.udpConns {
+		c.Close() //nolint:errcheck // best-effort; flows also self-close on idle
+	}
+	s.udpMu.Unlock()
 	s.wg.Wait()
 }
 
