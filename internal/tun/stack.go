@@ -72,6 +72,12 @@ const maxConcurrentFlows = 4096
 // every DNS query would pin a goroutine + endpoint forever.
 const udpDNSIdleTimeout = 30 * time.Second
 
+// udpRelayIdleTimeout is the silence limit for relayed (non-DNS) UDP
+// flows. Longer than the DNS reaper: QUIC connections and NTP clients
+// legitimately idle for minutes between exchanges, and re-creating those
+// flows costs a dial each time.
+const udpRelayIdleTimeout = 5 * time.Minute
+
 // Stack bridges the TUN device into a gvisor userspace TCP/IP stack and
 // forwards each flow through the router.
 type Stack struct {
@@ -87,17 +93,21 @@ type Stack struct {
 	flowSlots chan struct{}
 
 	// udpConns tracks live forwarder-created UDP endpoints (the TUN DNS
-	// flows). Close terminates them all so shutdown is not delayed by
-	// ReadFrom loops blocked on silent flows.
+	// flows and non-DNS relays). Close terminates them all so shutdown is
+	// not delayed by ReadFrom loops blocked on silent flows.
 	udpMu    sync.Mutex
 	udpConns map[*gonet.UDPConn]struct{}
 
-	// dnsIdleTimeout is the per-flow silence limit of the DNS server
+	// dnsIdleTimeout is the per-flow silence limit of the TUN DNS server
 	// (default udpDNSIdleTimeout; overridden in tests).
 	dnsIdleTimeout time.Duration
 
-	// activeDNSFlows counts live TUN DNS server loops.
-	activeDNSFlows atomic.Int64
+	// relayIdleTimeout is the per-flow silence limit of relayed (non-DNS)
+	// UDP flows (default udpRelayIdleTimeout; overridden in tests).
+	relayIdleTimeout time.Duration
+
+	// activeUDPFlows counts live TUN UDP server/relay loops.
+	activeUDPFlows atomic.Int64
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -124,14 +134,15 @@ type Conn interface {
 func NewStack(dev *Device, router FlowRouter) (*Stack, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Stack{
-		dev:            dev,
-		router:         router,
-		dnsPort:        53,
-		nicID:          1,
-		flowSlots:      make(chan struct{}, maxConcurrentFlows),
-		udpConns:       make(map[*gonet.UDPConn]struct{}),
-		dnsIdleTimeout: udpDNSIdleTimeout,
-		cancel:         cancel,
+		dev:              dev,
+		router:           router,
+		dnsPort:          53,
+		nicID:            1,
+		flowSlots:        make(chan struct{}, maxConcurrentFlows),
+		udpConns:         make(map[*gonet.UDPConn]struct{}),
+		dnsIdleTimeout:   udpDNSIdleTimeout,
+		relayIdleTimeout: udpRelayIdleTimeout,
+		cancel:           cancel,
 	}
 
 	const defaultMTU = 1500
@@ -251,7 +262,7 @@ func (s *Stack) Close() {
 	// ReadFrom loops only end on an error (there is no deadline on a
 	// gvisor UDP endpoint), and closing the endpoint wakes the blocked
 	// read with ErrClosedForReceive. Without this, wg.Wait() would stall
-	// up to the DNS idle timeout on machines with an active DNS flow.
+	// up to the idle timeout on machines with an active DNS/relay flow.
 	s.udpMu.Lock()
 	for c := range s.udpConns {
 		c.Close() //nolint:errcheck // best-effort; flows also self-close on idle

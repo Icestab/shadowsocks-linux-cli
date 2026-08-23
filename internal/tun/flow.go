@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -74,10 +75,23 @@ func (s *Stack) handleTCP(ctx context.Context, r *tcp.ForwarderRequest) {
 }
 
 // handleUDP routes UDP datagrams. Port 53 goes to the internal DNS server;
-// other UDP relay is deferred (Phase 1 scope) but arrives here, so the
-// extension point already exists.
+// every other UDP flow (QUIC/HTTP3, NTP, VoIP...) is relayed through the
+// same DIRECT/PROXY decision as TCP — DIRECT is a marked native socket,
+// PROXY is a SOCKS5 UDP ASSOCIATE through sslocal. Flows are reaped after
+// an idle window and terminated by Stack.Close, exactly like DNS flows.
 func (s *Stack) handleUDP(ctx context.Context, r *udp.ForwarderRequest) {
 	id := r.ID()
+
+	// 非 DNS 流共享 TCP 的并发预算（每个中继占 endpoint+2 goroutine+缓冲）。
+	// DNS 是控制面，保持无准入（查询量小、reap 快），负载下也不丢解析。
+	if uint16(id.LocalPort) != s.dnsPort {
+		select {
+		case s.flowSlots <- struct{}{}:
+			defer func() { <-s.flowSlots }()
+		default:
+			return // 静默丢：丢包会让应用走重试/降级，而不是拖垮整个栈
+		}
+	}
 
 	wq := &waiter.Queue{}
 	ep, err := r.CreateEndpoint(wq)
@@ -92,11 +106,11 @@ func (s *Stack) handleUDP(ctx context.Context, r *udp.ForwarderRequest) {
 		s.udpMu.Lock()
 		s.udpConns[gc] = struct{}{}
 		s.udpMu.Unlock()
-		s.activeDNSFlows.Add(1)
+		s.activeUDPFlows.Add(1)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			defer s.activeDNSFlows.Add(-1)
+			defer s.activeUDPFlows.Add(-1)
 			defer func() {
 				s.udpMu.Lock()
 				delete(s.udpConns, gc)
@@ -106,9 +120,102 @@ func (s *Stack) handleUDP(ctx context.Context, r *udp.ForwarderRequest) {
 		}()
 		return
 	}
-	// Non-DNS UDP is out of Phase 1 scope; closing sends ICMP unreachable
-	// back into the userspace stack.
-	ep.Close()
+
+	// 非 DNS UDP：按分流决策中继。
+	dst := netAddr(id.LocalAddress, id.LocalPort)
+	outbound, derr := s.router.DialFlow(ctx, "udp", dst)
+	if derr != nil {
+		if debugEnabled() {
+			fmt.Printf("[sscli][debug] udp %s dial: %v\n", dst, derr)
+		}
+		ep.Close()
+		return
+	}
+	s.udpMu.Lock()
+	s.udpConns[gc] = struct{}{}
+	s.udpMu.Unlock()
+	s.activeUDPFlows.Add(1)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer s.activeUDPFlows.Add(-1)
+		defer func() {
+			s.udpMu.Lock()
+			delete(s.udpConns, gc)
+			s.udpMu.Unlock()
+		}()
+		s.serveUDPRelay(ctx, gc, outbound)
+	}()
+}
+
+// serveUDPRelay relays datagrams between the app's flow (a connected
+// gvisor endpoint) and the outbound path the router selected — a marked
+// native socket (DIRECT) or a SOCKS5 UDP ASSOCIATE through sslocal
+// (PROXY). Same reaper pattern as serveDNSOverUDP: gvisor holds
+// forwarder endpoints alive until closed, and both Read loops only end on
+// an error, so an idle timeout plus Stack.Close both terminate the flow.
+//
+// On the first fatal error in either direction (e.g. ICMP port unreachable
+// surfacing on the connected socket) both legs are closed and the flow
+// ends — the app sees its UDP connection die and retries, instead of
+// hanging on a dead flow. Datagrams larger than bufSize are truncated.
+func (s *Stack) serveUDPRelay(ctx context.Context, conn *gonet.UDPConn, outbound Conn) {
+	defer conn.Close()
+	defer outbound.Close()
+	idle := s.relayIdleTimeout
+	if idle <= 0 {
+		idle = udpRelayIdleTimeout
+	}
+	// time.AfterFunc uses the runtime timer heap, not a goroutine per flow.
+	var once sync.Once
+	kill := func() {
+		once.Do(func() {
+			_ = conn.Close()
+			_ = outbound.Close()
+		})
+	}
+	reaper := time.AfterFunc(idle, kill)
+	defer reaper.Stop()
+
+	const bufSize = 8192
+	appBuf := make([]byte, bufSize)
+	netBuf := make([]byte, bufSize)
+	done := make(chan struct{}, 2)
+
+	// app -> outbound
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			n, _, err := conn.ReadFrom(appBuf)
+			if err != nil {
+				kill()
+				return
+			}
+			reaper.Reset(idle)
+			if _, err := outbound.Write(appBuf[:n]); err != nil {
+				kill()
+				return
+			}
+		}
+	}()
+	// outbound -> app
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			n, err := outbound.Read(netBuf)
+			if err != nil {
+				kill()
+				return
+			}
+			reaper.Reset(idle)
+			if _, err := conn.WriteTo(netBuf[:n], nil); err != nil {
+				kill()
+				return
+			}
+		}
+	}()
+	<-done
+	<-done
 }
 
 // serveDNSOverUDP answers DNS queries received via the TUN until the flow

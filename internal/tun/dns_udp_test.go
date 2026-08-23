@@ -158,13 +158,13 @@ func TestUDPServerReapsIdleDNSFlows(t *testing.T) {
 	// 1. A query spawns a flow and gets answered.
 	inject()
 	readReply()
-	if got := s.activeDNSFlows.Load(); got != 1 {
+	if got := s.activeUDPFlows.Load(); got != 1 {
 		t.Fatalf("active DNS flows = %d, want 1 after first query", got)
 	}
 
 	// 2. After the idle window the flow must reap itself (goroutine gone).
 	deadline := time.Now().Add(2 * time.Second)
-	for s.activeDNSFlows.Load() != 0 {
+	for s.activeUDPFlows.Load() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("DNS flow was not reaped after the idle timeout")
 		}
@@ -174,7 +174,7 @@ func TestUDPServerReapsIdleDNSFlows(t *testing.T) {
 	// 3. A new query on the same 5-tuple gets a fresh flow and is answered.
 	inject()
 	readReply()
-	if got := s.activeDNSFlows.Load(); got != 1 {
+	if got := s.activeUDPFlows.Load(); got != 1 {
 		t.Fatalf("active DNS flows = %d, want 1 after re-query", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestStackCloseTerminatesDNSFlows(t *testing.T) {
 
 	// Let the flow come up.
 	deadline := time.Now().Add(2 * time.Second)
-	for s.activeDNSFlows.Load() != 1 {
+	for s.activeUDPFlows.Load() != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("DNS flow never came up")
 		}
@@ -217,7 +217,7 @@ func TestStackCloseTerminatesDNSFlows(t *testing.T) {
 	s.Close()
 
 	deadline = time.Now().Add(2 * time.Second)
-	for s.activeDNSFlows.Load() != 0 {
+	for s.activeUDPFlows.Load() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("Stack.Close did not terminate the DNS flow")
 		}
