@@ -47,6 +47,32 @@ func TestMappingExpiry(t *testing.T) {
 	}
 }
 
+// startFakeUpstream serves the same handler on UDP and TCP at one loopback
+// port: the resolver now exchanges direct upstream queries over TCP (UDP
+// answers are forgeable on an untrusted LAN), so every fake upstream must
+// speak it. Returns "host:port". (miekg's ActivateAndServe serves only
+// ONE of PacketConn/Listener, so two servers share the handler.)
+func startFakeUpstream(t *testing.T, h mdns.Handler) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &mdns.Server{PacketConn: pc, Handler: h}
+	go func() { _ = u.ActivateAndServe() }()
+	t.Cleanup(func() { _ = u.Shutdown() })
+
+	ln, err := net.Listen("tcp", pc.LocalAddr().String())
+	if err != nil {
+		pc.Close()
+		t.Fatal(err)
+	}
+	tc := &mdns.Server{Listener: ln, Handler: h}
+	go func() { _ = tc.ActivateAndServe() }()
+	t.Cleanup(func() { _ = tc.Shutdown() })
+	return pc.LocalAddr().String()
+}
+
 func TestServerHandlesAQuery(t *testing.T) {
 	// Use a fake upstream served by our own test DNS server so the test
 	// never touches the network.
@@ -60,14 +86,7 @@ func TestServerHandlesAQuery(t *testing.T) {
 		})
 		_ = w.WriteMsg(resp)
 	})
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
-	defer upSrv.Shutdown()
-	go func() { _ = upSrv.ActivateAndServe() }()
-	upAddr := pc.LocalAddr().String()
+	upAddr := startFakeUpstream(t, upstream)
 
 	china := rules.NewDomainSet()
 	resolver := NewResolver([]string{upAddr}, []string{upAddr}, china, nil)
@@ -125,16 +144,10 @@ func TestServerServesTCP(t *testing.T) {
 		})
 		_ = w.WriteMsg(resp)
 	})
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
-	defer upSrv.Shutdown()
-	go func() { _ = upSrv.ActivateAndServe() }()
+	upAddr := startFakeUpstream(t, upstream)
 
 	china := rules.NewDomainSet()
-	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	resolver := NewResolver([]string{upAddr}, []string{upAddr}, china, nil)
 	srv := NewServer(resolver, nil)
 
 	// Reserve a free TCP port for the sscli listener.
@@ -199,16 +212,10 @@ func TestServerNODATAForMissingType(t *testing.T) {
 		// AAAA: NOERROR with no answer records (NODATA).
 		_ = w.WriteMsg(resp)
 	})
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
-	defer upSrv.Shutdown()
-	go func() { _ = upSrv.ActivateAndServe() }()
+	upAddr := startFakeUpstream(t, upstream)
 
 	china := rules.NewDomainSet()
-	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	resolver := NewResolver([]string{upAddr}, []string{upAddr}, china, nil)
 	srv := NewServer(resolver, nil)
 
 	req := new(mdns.Msg)
@@ -231,16 +238,10 @@ func TestServerNXDOMAINPropagation(t *testing.T) {
 		resp.SetRcode(r, mdns.RcodeNameError)
 		_ = w.WriteMsg(resp)
 	})
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	upSrv := &mdns.Server{PacketConn: pc, Handler: upstream}
-	defer upSrv.Shutdown()
-	go func() { _ = upSrv.ActivateAndServe() }()
+	upAddr := startFakeUpstream(t, upstream)
 
 	china := rules.NewDomainSet()
-	resolver := NewResolver([]string{pc.LocalAddr().String()}, []string{pc.LocalAddr().String()}, china, nil)
+	resolver := NewResolver([]string{upAddr}, []string{upAddr}, china, nil)
 	srv := NewServer(resolver, nil)
 
 	req := new(mdns.Msg)

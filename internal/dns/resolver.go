@@ -52,21 +52,14 @@ func NewResolver(domestic, foreign []string, china *rules.DomainSet, mapping *Ma
 	if mapping == nil {
 		mapping = NewMapping(0, 0)
 	}
-	// Domestic UDP sockets carry the fwmark escape (tolerated as a no-op
-	// without CAP_NET_ADMIN, e.g. in tests).
-	c := &mdns.Client{Net: "udp", Timeout: 3 * time.Second}
+	// Direct upstream exchanges go over TCP, never UDP: on an untrusted
+	// LAN a UDP answer can be forged off-path, while TCP requires winning
+	// the handshake first. The sockets carry the fwmark escape (tolerated
+	// as a no-op without CAP_NET_ADMIN, e.g. in tests).
+	c := &mdns.Client{Net: "tcp", Timeout: 3 * time.Second}
 	c.Dialer = &net.Dialer{
 		Timeout: 3 * time.Second,
-		Control: func(network, address string, conn syscall.RawConn) error {
-			var ctlErr error
-			err := conn.Control(func(fd uintptr) {
-				ctlErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, Fwmark)
-			})
-			if err != nil || ctlErr != nil {
-				return nil //nolint:nilerr // best effort; only needed while TUN hijack is active
-			}
-			return nil
-		},
+		Control: markSocket,
 	}
 	return &Resolver{
 		domestic: domestic,
@@ -76,6 +69,19 @@ func NewResolver(domestic, foreign []string, china *rules.DomainSet, mapping *Ma
 		timeout:  3 * time.Second,
 		client:   c,
 	}
+}
+
+// markSocket sets the fwmark on outbound sockets (SO_MARK), best-effort:
+// only needed while the TUN hijack is active (CAP_NET_ADMIN required).
+func markSocket(network, address string, conn syscall.RawConn) error {
+	var ctlErr error
+	err := conn.Control(func(fd uintptr) {
+		ctlErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, Fwmark)
+	})
+	if err != nil || ctlErr != nil {
+		return nil //nolint:nilerr // deliberate fallback, see caller comment
+	}
+	return nil
 }
 
 // SetProxyDial installs a dialer used for foreign upstream queries. When
