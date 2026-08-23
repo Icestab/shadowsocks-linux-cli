@@ -24,11 +24,13 @@ The Shadowsocks protocol itself is **not re-implemented**: sscli manages the off
 
 - **Three modes**: `gfw` (default, proxy only GFW-listed targets), `bypass` (proxy everything except China), `global` (proxy everything except LAN)
 - **TUN takeover** via gvisor netstack — the same userspace TCP/IP stack used by sing-box/mihomo
-- **Loop prevention**, three layers: fwmark on sscli's own sockets, 14 private-range policy exemptions, and a /32 host route for the VPS through the original gateway (covers the unmarked sslocal child process)
-- **Split DNS**: domestic upstreams carry the fwmark escape; foreign queries are exchanged over TCP inside the proxy tunnel so plaintext DNS never leaves the machine. A TTL-aware domain→IP mapping enables domain rules on IP connections.
-- **Rule engine**: exact/suffix domain hashing + CIDR radix trie; six-level priority; 95k+ entries match in microseconds
-- **Crash-safe networking**: SIGINT/SIGTERM/SIGHUP restore TUN/routes/rules; `sscli stop` sweeps leftovers idempotently after a crash
-- **IPv6 leak protection**: v6 is blocked by default until full support lands
+- **Full-protocol split routing**: TCP and UDP (QUIC/HTTP3, NTP, VoIP…) share the same DIRECT/PROXY decision — native sockets marked with fwmark for DIRECT, SOCKS5 UDP ASSOCIATE for PROXY
+- **Loop prevention**, three layers: fwmark on sscli's own sockets, 14 private-range policy exemptions, and host routes for **every** resolved VPS address through the original gateway — DNS round-robin servers can't feed a loop
+- **Split DNS**: domestic upstreams are queried over TCP (forged-answer resistance) with the fwmark escape; foreign queries are exchanged over TCP inside the proxy tunnel so plaintext DNS never leaves the machine. The VPS domain is resolved via **DoH** (RFC 8484) at boot instead of the ISP resolver. A TTL-aware domain→IP mapping enables domain rules on IP connections.
+- **Rule engine**: exact/suffix domain hashing + CIDR radix trie; six-level priority; 95k+ entries match in microseconds; updates carry a content-drift warning
+- **Least privilege & resource guards**: sslocal runs as `nobody` (password via a 0600 temp file, never argv); 4096 concurrent-flow admission, idle reaping for DNS/UDP flows
+- **Crash-safe networking**: SIGINT/SIGTERM/SIGHUP restore TUN/routes/rules; `sscli stop` sweeps leftovers idempotently after a crash (verifies `/proc/<pid>/exe` so a recycled PID is never signaled)
+- **IPv6 leak protection**: the v6 TUN route is installed only when the host actually has global IPv6 — foreign v6 can't leak past the TUN, and hosts with only link-local v6 aren't forced into broken v6-first connections
 
 ## Installation
 
@@ -39,15 +41,15 @@ curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/maste
 ```
 
 Resolves the latest release, verifies the checksum and installs everything.
-Env overrides: `SS_VERSION=v0.2.0`, `PREFIX=~/.local`.
+Env overrides: `SS_VERSION=v0.2.3`, `PREFIX=~/.local`.
 
 ### Option 2: prebuilt release package
 
 Grab `sscli-v<version>-linux-<arch>.tar.xz` (+ `.sha256`) from [Releases](https://github.com/Icestab/shadowsocks-linux-cli/releases). Packages are offline-complete: they bundle the sscli binary, the official sslocal binary, and a rule-file baseline captured at build time.
 
 ```bash
-echo "<official-sha256>  sscli-v0.2.0-linux-x86_64.tar.xz" | sha256sum -c -   # optional
-tar xJf sscli-v0.2.0-linux-x86_64.tar.xz && cd sscli-v0.2.0-linux-x86_64
+echo "<official-sha256>  sscli-v0.2.3-linux-x86_64.tar.xz" | sha256sum -c -   # optional
+tar xJf sscli-v0.2.3-linux-x86_64.tar.xz && cd sscli-v0.2.3-linux-x86_64
 sudo ./install.sh     # offline deployment, then refreshes rules online automatically
 ```
 
@@ -112,10 +114,9 @@ Only `start`/`stop`/`restart` need root; every other command runs unprivileged.
 
 ## Known limitations
 
-- Non-53 UDP is not forwarded yet (dropped); HTTP/3 sites fall back to HTTP/2
-- Full IPv6 proxying pending; v6 is blocked by default to prevent leaks
+- Full IPv6 proxying pending; v6 traffic is only captured on hosts with global IPv6 (and relayed per the DIRECT/PROXY decision)
 - WSL2 mirrored networking mode may conflict with policy routing; use NAT mode
-- No Fake-IP/DoH/DoT yet (interfaces reserved)
+- No Fake-IP/DoT yet (interfaces reserved; DoH is used for boot-time bootstrap resolution)
 
 See [docs/testing.md](docs/testing.md) (Chinese) for the full test guide.
 

@@ -24,11 +24,13 @@ Linux / WSL
 
 - **三种模式**：`gfw`（默认，仅代理 GFW List 命中目标）、`bypass`（默认代理，绕过中国）、`global`（除局域网全代理）
 - **TUN 接管**：基于 gvisor netstack（sing-box/mihomo 同款用户态 TCP/IP 栈）
-- **防代理死循环**：fwmark + 独立路由表 + VPS /32 主机路由豁免三重防护
-- **DNS 分流**：内置分流解析器（中国域名走国内上游），域名→IP 映射表支撑基于域名的 IP 连接路由；架构预留 DoH/DoT/Fake-IP 扩展点
-- **规则系统**：GFW List / 中国域名 / 中国 IP / 自定义规则，优先级明确，Hash+基数树结构支撑数十万条目毫秒级匹配
-- **安全退出**：SIGINT/SIGTERM/SIGHUP 全量恢复网络状态，崩溃后可用 `sscli stop` 清扫残留
-- **IPv6 防泄漏**：默认 `ipv6.block: true`，避免 IPv6 流量绕过代理
+- **TCP/UDP 全协议分流**：TCP 与 UDP（QUIC/HTTP3、NTP、VoIP 等）走同一套 DIRECT/PROXY 决策——直连为 fwmark 原生 socket，代理为 SOCKS5 UDP ASSOCIATE
+- **防代理死循环**：fwmark + 独立路由表 + VPS 主机路由豁免（解析出的**全部**服务器地址都豁免，DNS 轮询多 A 记录不会回环）
+- **DNS 分流**：内置分流解析器（中国域名走国内上游），直连上游用 TCP 传输防 LAN 伪造应答；**服务器域名启动解析走 DoH**（RFC 8484），不被 ISP 明文窥探；域名→IP 映射表支撑基于域名的 IP 连接路由
+- **规则系统**：GFW List / 中国域名 / 中国 IP / 自定义规则，优先级明确，Hash+基数树结构支撑数十万条目毫秒级匹配；更新带内容漂移告警
+- **最小权限与资源防护**：sslocal 以 nobody 降权运行、密码经 0600 临时文件传递；4096 并发流准入、DNS/UDP 流空闲回收
+- **安全退出**：SIGINT/SIGTERM/SIGHUP 全量恢复网络状态，崩溃后可用 `sscli stop` 清扫残留（带 PID 验身，不误杀复用 PID 的进程）
+- **IPv6 防泄漏**：仅当主机存在全局 IPv6 时才安装 v6 TUN 路由，避免 v6 绕过代理或拖死连接
 
 ## 安装
 
@@ -38,7 +40,7 @@ Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/master/scripts/install-remote.sh | bash
 ```
 
-自动完成：解析最新版本 → 下载对应架构的 Release 包 → SHA256 校验 → 安装 sscli/sslocal/规则 → 生成配置模板。可选环境变量：`SS_VERSION=v0.2.0`、`PREFIX=~/.local`。
+自动完成：解析最新版本 → 下载对应架构的 Release 包 → SHA256 校验 → 安装 sscli/sslocal/规则 → 生成配置模板。可选环境变量：`SS_VERSION=v0.2.3`、`PREFIX=~/.local`。
 
 ### 方式二：下载发布包（无需 Go 环境）
 
@@ -47,8 +49,8 @@ curl -fsSL https://raw.githubusercontent.com/Icestab/shadowsocks-linux-cli/maste
 **包内自带全部依赖**：静态编译的 sscli、官方预编译 sslocal、打包时点的三份路由规则基线——安装阶段无需联网，也没有"没有代理就下不了规则"的引导问题：
 
 ```bash
-echo "<官方sha256>  sscli-v0.2.0-linux-x86_64.tar.xz" | sha256sum -c -   # 可选校验
-tar xJf sscli-v0.2.0-linux-x86_64.tar.xz && cd sscli-v0.2.0-linux-x86_64
+echo "<官方sha256>  sscli-v0.2.3-linux-x86_64.tar.xz" | sha256sum -c -   # 可选校验
+tar xJf sscli-v0.2.3-linux-x86_64.tar.xz && cd sscli-v0.2.3-linux-x86_64
 sudo ./install.sh     # 离线完成部署，随后自动尝试在线刷新规则到最新
 ```
 
@@ -168,19 +170,18 @@ go test ./...                 # 单元测试（规则引擎/DNS/SS链路/路由�
 ### 已实现
 
 - CLI 全命令集：`start/stop/restart/status/test/update/mode/rules/route/dns/config`
-- 配置加载/校验/模式热切换（原子改写 YAML）
-- Shadowsocks 链路：托管 sslocal 子进程（密码经 0600 临时配置文件传递，不进命令行），SOCKS5 出站，本地 ssserver 回环端到端测试通过
-- TUN + gvisor netstack TCP 流终结，DNS(UDP 53) 劫持应答，其余 UDP 预留
-- 策略路由：fwmark 逃逸、14 个私有网段豁免、VPS 主机路由、独立表默认路由，全部操作可逆
-- DNS 分流解析器 + TTL 域名映射表
+- 配置加载/校验/模式热切换（原子改写 YAML；`sslocal.socks_addr` 强制回环，防 LAN 开放代理）
+- Shadowsocks 链路：托管 sslocal 子进程（密码经 0600 临时配置文件传递，不进命令行），以 nobody 降权运行；SOCKS5 + UDP ASSOCIATE 出站，本地 ssserver 回环端到端测试通过
+- TUN + gvisor netstack：TCP 流终结、UDP 中继（非 53 端口同走 DIRECT/PROXY 分流，QUIC/HTTP3/NTP 可用）、DNS(53，UDP+TCP) 劫持应答；并发流准入 4096，DNS/UDP 流空闲自动回收
+- 策略路由：fwmark 逃逸、14 个私有网段豁免、VPS 全部解析地址主机路由、独立表默认路由，全部操作可逆；v6 TUN 路由仅在有全局 IPv6 时安装
+- DNS 分流解析器（直连上游走 TCP 防伪造；启动引导解析走 DoH，回退系统 DNS 时告警）+ TTL 域名映射表
 - 三种模式（真实规则数据验证符合验收矩阵）
-- 规则下载/校验/原子替换
-- 信号处理与网络状态恢复：SIGINT/SIGTERM/SIGHUP 全量清理，`sscli stop` 幂等可清扫崩溃残留（不依赖 systemd，手动管理为唯一方式）
+- 规则下载/校验/原子替换/内容漂移告警；日志按启动轮转
+- 信号处理与网络状态恢复：SIGINT/SIGTERM/SIGHUP 全量清理，`sscli stop` 幂等可清扫崩溃残留（PID 验身，不误杀复用 PID 的其他进程；不依赖 systemd，手动管理为唯一方式）
 
 ### 未实现（第一阶段明确不做）
 
-- UDP 完整转发（入口已预留：非 53 端口 UDP 目前丢弃）
-- Fake-IP、DoH/DoT（DNS 模块接口已预留）
+- Fake-IP、DoT（DNS 模块接口已预留；DoH 已用于启动引导解析）
 - IPv6 完整代理（默认阻断防泄漏，架构已预留 v6 CIDR 匹配）
 - GUI/Web UI/Clash API/订阅/多节点等（见需求三十二）
 
