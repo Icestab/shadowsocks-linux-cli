@@ -37,17 +37,17 @@ func TestHijackStateRoundtrip(t *testing.T) {
 		"-A OUTPUT -m mark --mark 0x162 -j RETURN",
 		"-A OUTPUT -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 53090",
 	}
-	if err := saveHijackState(path, delta); err != nil {
+	if err := saveRuleState(path, delta); err != nil {
 		t.Fatal(err)
 	}
-	got := loadHijackState(path)
+	got := loadRuleState(path)
 	if !reflect.DeepEqual(got, delta) {
 		t.Errorf("roundtrip = %v, want %v", got, delta)
 	}
 }
 
 func TestLoadHijackStateMissingFile(t *testing.T) {
-	if got := loadHijackState(filepath.Join(t.TempDir(), "nope")); len(got) != 0 {
+	if got := loadRuleState(filepath.Join(t.TempDir(), "nope")); len(got) != 0 {
 		t.Errorf("missing state should be empty, got %v", got)
 	}
 }

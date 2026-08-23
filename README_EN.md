@@ -29,6 +29,7 @@ The Shadowsocks protocol itself is **not re-implemented**: sscli manages the off
 - **Split DNS**: domestic upstreams are queried over TCP (forged-answer resistance) with the fwmark escape; foreign queries are exchanged over TCP inside the proxy tunnel so plaintext DNS never leaves the machine. The VPS domain is resolved via **DoH** (RFC 8484) at boot instead of the ISP resolver. A TTL-aware domain→IP mapping enables domain rules on IP connections.
 - **Rule engine**: exact/suffix domain hashing + CIDR radix trie; six-level priority; 95k+ entries match in microseconds; updates carry a content-drift warning
 - **Least privilege & resource guards**: sslocal runs as `nobody` (password via a 0600 temp file, never argv); 4096 concurrent-flow admission, idle reaping for DNS/UDP flows
+- **Remote sessions survive start/stop**: pre-existing TCP connections (an SSH session into this very machine) and replies of inbound connections are exempted via a conntrack ESTABLISHED/RELATED fwmark rule onto the main table — remote administration is not interrupted when sscli (re)starts; new outbound connections still get split-routed
 - **Crash-safe networking**: SIGINT/SIGTERM/SIGHUP restore TUN/routes/rules; `sscli stop` sweeps leftovers idempotently after a crash (verifies `/proc/<pid>/exe` so a recycled PID is never signaled)
 - **IPv6 leak protection**: the v6 TUN route is installed only when the host actually has global IPv6 — foreign v6 can't leak past the TUN, and hosts with only link-local v6 aren't forced into broken v6-first connections
 

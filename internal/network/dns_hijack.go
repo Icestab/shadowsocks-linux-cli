@@ -3,8 +3,6 @@ package network
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -23,20 +21,6 @@ const FwmarkString = "0x162"
 // never a user's pre-existing rules.
 var HijackStateFileName = "dns-hijack.rules"
 
-// firewallBackend resolves once per call site: only the iptables-compatible
-// interface is used (plain iptables or iptables-nft). Native `nft` is
-// deliberately NOT mixed in — touching both backends independently risks
-// corrupting the shared nftables view. Environments with neither get no
-// DNS hijack at all (domain rules degrade to IP-only matching).
-func firewallBackend() (string, bool) {
-	for _, c := range []string{"iptables", "iptables-nft"} {
-		if p, err := exec.LookPath(c); err == nil {
-			return p, true
-		}
-	}
-	return "", false
-}
-
 // dnsHijackSpecs returns the rulespec bodies (without chain/action prefix)
 // of the three rules we manage, in insertion order. Order matters: exempt
 // marked sockets first, then redirect port 53.
@@ -48,76 +32,6 @@ func dnsHijackSpecs() [][]string {
 	}
 }
 
-func iptablesRun(bin string, args ...string) (string, error) {
-	full := append([]string{bin}, args...)
-	cmd := exec.Command(full[0], full[1:]...) //nolint:gosec // fixed args we built
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-// snapshotOutputRules lists current nat OUTPUT rules as rulespec lines,
-// e.g. "-A OUTPUT -m mark --mark 0x162 -j RETURN".
-func snapshotOutputRules(bin string) ([]string, error) {
-	out, err := iptablesRun(bin, "-t", "nat", "-S", "OUTPUT")
-	if err != nil {
-		return nil, err
-	}
-	var lines []string
-	for _, l := range strings.Split(out, "\n") {
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "-A OUTPUT ") {
-			lines = append(lines, l)
-		}
-	}
-	return lines, nil
-}
-
-// specKey normalizes a snapshot line into a comparable key.
-func specKey(line string) string {
-	return strings.Join(strings.Fields(line), " ")
-}
-
-// computeDelta returns the multiset difference post - pre: exactly the
-// rules WE added.
-func computeDelta(pre, post []string) []string {
-	counts := map[string]int{}
-	for _, l := range pre {
-		counts[specKey(l)]++
-	}
-	var delta []string
-	for _, l := range post {
-		k := specKey(l)
-		if counts[k] > 0 {
-			counts[k]--
-			continue
-		}
-		delta = append(delta, l)
-	}
-	return delta
-}
-
-func saveHijackState(statePath string, delta []string) error {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o750); err != nil {
-		return err
-	}
-	return os.WriteFile(statePath, []byte(strings.Join(delta, "\n")), 0o600)
-}
-
-func loadHijackState(statePath string) []string {
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return nil
-	}
-	var lines []string
-	for _, l := range strings.Split(string(data), "\n") {
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "-A OUTPUT ") {
-			lines = append(lines, l)
-		}
-	}
-	return lines
-}
-
 // SetupDNSHijack inserts the redirects and records the exact delta to
 // statePath. Best-effort: without an iptables-compatible backend it is a
 // no-op (domain rules degrade to IP-only matching).
@@ -126,7 +40,7 @@ func SetupDNSHijack(statePath string) error {
 	if !ok {
 		return nil
 	}
-	pre, err := snapshotOutputRules(bin)
+	pre, err := snapshotRules(bin, "nat", "OUTPUT")
 	if err != nil {
 		return fmt.Errorf("snapshot pre-state: %w", err)
 	}
@@ -138,7 +52,7 @@ func SetupDNSHijack(statePath string) error {
 		}
 		pos++
 	}
-	post, err := snapshotOutputRules(bin)
+	post, err := snapshotRules(bin, "nat", "OUTPUT")
 	if err != nil {
 		return fmt.Errorf("snapshot post-state: %w", err)
 	}
@@ -153,7 +67,7 @@ func SetupDNSHijack(statePath string) error {
 		return fmt.Errorf("dns hijack: inserted %d rules, expected %d; rolled back",
 			len(delta), len(dnsHijackSpecs()))
 	}
-	if err := saveHijackState(statePath, delta); err != nil {
+	if err := saveRuleState(statePath, delta); err != nil {
 		return fmt.Errorf("persist hijack state: %w", err)
 	}
 	return nil
@@ -167,7 +81,7 @@ func TeardownDNSHijack(statePath string) error {
 	if !ok {
 		return nil
 	}
-	delta := loadHijackState(statePath)
+	delta := loadRuleState(statePath)
 	if len(delta) == 0 {
 		for _, spec := range dnsHijackSpecs() {
 			delta = append(delta, "-A OUTPUT "+strings.Join(spec, " "))

@@ -29,6 +29,7 @@ Linux / WSL
 - **DNS 分流**：内置分流解析器（中国域名走国内上游），直连上游用 TCP 传输防 LAN 伪造应答；**服务器域名启动解析走 DoH**（RFC 8484），不被 ISP 明文窥探；域名→IP 映射表支撑基于域名的 IP 连接路由
 - **规则系统**：GFW List / 中国域名 / 中国 IP / 自定义规则，优先级明确，Hash+基数树结构支撑数十万条目毫秒级匹配；更新带内容漂移告警
 - **最小权限与资源防护**：sslocal 以 nobody 降权运行、密码经 0600 临时文件传递；4096 并发流准入、DNS/UDP 流空闲回收
+- **远程会话不中断**：既有 TCP 连接（如登录本机的 SSH 会话）与入向新连接的应答经 conntrack ESTABLISHED 豁免直接走原路径，启动/重启不打断远程管理；新出站连接照常分流
 - **安全退出**：SIGINT/SIGTERM/SIGHUP 全量恢复网络状态，崩溃后可用 `sscli stop` 清扫残留（带 PID 验身，不误杀复用 PID 的进程）
 - **IPv6 防泄漏**：仅当主机存在全局 IPv6 时才安装 v6 TUN 路由，避免 v6 绕过代理或拖死连接
 
@@ -173,7 +174,7 @@ go test ./...                 # 单元测试（规则引擎/DNS/SS链路/路由�
 - 配置加载/校验/模式热切换（原子改写 YAML；`sslocal.socks_addr` 强制回环，防 LAN 开放代理）
 - Shadowsocks 链路：托管 sslocal 子进程（密码经 0600 临时配置文件传递，不进命令行），以 nobody 降权运行；SOCKS5 + UDP ASSOCIATE 出站，本地 ssserver 回环端到端测试通过
 - TUN + gvisor netstack：TCP 流终结、UDP 中继（非 53 端口同走 DIRECT/PROXY 分流，QUIC/HTTP3/NTP 可用）、DNS(53，UDP+TCP) 劫持应答；并发流准入 4096，DNS/UDP 流空闲自动回收
-- 策略路由：fwmark 逃逸、14 个私有网段豁免、VPS 全部解析地址主机路由、独立表默认路由，全部操作可逆；v6 TUN 路由仅在有全局 IPv6 时安装
+- 策略路由：fwmark 逃逸、14 个私有网段豁免、VPS 全部解析地址主机路由、独立表默认路由，全部操作可逆；v6 TUN 路由仅在有全局 IPv6 时安装；既有 TCP 连接豁免（mangle OUTPUT 对 conntrack ESTABLISHED/RELATED 打 fwmark 直连，snapshot-delta 管理、随 stop/崩溃清扫精确拆除；仅限 TCP——UDP 豁免会绕过 DNS 劫持饿死域名映射）
 - DNS 分流解析器（直连上游走 TCP 防伪造；启动引导解析走 DoH，回退系统 DNS 时告警）+ TTL 域名映射表
 - 三种模式（真实规则数据验证符合验收矩阵）
 - 规则下载/校验/原子替换/内容漂移告警；日志按启动轮转

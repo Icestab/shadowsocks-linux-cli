@@ -53,6 +53,16 @@ func hijackStatePath() (string, error) {
 	return filepath.Join(d, network.HijackStateFileName), nil
 }
 
+// establishedStatePath is where the established-connection exemption rule
+// delta is recorded (same directory as the hijack state).
+func establishedStatePath() (string, error) {
+	d, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, network.EstablishedStateFileName), nil
+}
+
 const daemonEnv = "SSCLI_DAEMON"
 
 // LogFile returns the path of the daemon log (StateDir/sscli.log).
@@ -107,6 +117,9 @@ func Start(loadCfg func() (*config.Config, error), foreground bool) error {
 			fmt.Println("second signal: forcing exit with fast network sweep")
 			if hp, he := hijackStatePath(); he == nil {
 				network.TeardownDNSHijack(hp) //nolint:errcheck
+			}
+			if ep, ee := establishedStatePath(); ee == nil {
+				network.TeardownEstablishedExempt(ep) //nolint:errcheck
 			}
 			network.NewManager(cfg.TUN.Name, proxy.Fwmark, routingTable).Teardown() //nolint:errcheck
 			network.DeleteLink(cfg.TUN.Name)                                        //nolint:errcheck
@@ -168,7 +181,25 @@ func boot(cfg *config.Config) (*Runtime, error) {
 		return rt, err
 	}
 
-	// 5. Policy routing with loop-prevention exceptions + DNS hijack
+	// 5. Existing-connection exemption BEFORE the routing switch: from the
+	// moment the TUN lookup rule takes over, reply packets of connections
+	// that pre-date sscli (an SSH session into this machine) would be
+	// captured and swallowed by the gvisor forwarder (it only accepts
+	// SYNs). `conntrack --ctstate ESTABLISHED,RELATED` packets get the
+	// fwmark instead, keeping them on the original main-table path;
+	// NEW connections (SYN, no conntrack entry yet) still enter the TUN
+	// and are split-routed as before. This rule must exist before
+	// nm.Setup, otherwise the window between the two leaves established
+	// replies vulnerable.
+	estState, esErr := establishedStatePath()
+	if esErr != nil {
+		return rt, fmt.Errorf("resolve established state path: %w", esErr)
+	}
+	if err := network.SetupEstablishedExempt(estState); err != nil {
+		return rt, err
+	}
+
+	// 6. Policy routing with loop-prevention exceptions + DNS hijack
 	// (redirects local :53 into our resolver so the domain->IP mapping
 	// fills even when the system resolver sits on a private address).
 	if err := rt.nm.Setup(serverIPs); err != nil {
@@ -184,13 +215,13 @@ func boot(cfg *config.Config) (*Runtime, error) {
 		}
 	}
 
-	// 6. Rules engine from config + rule files.
+	// 7. Rules engine from config + rule files.
 	engine, err := router.LoadEngine(cfg)
 	if err != nil {
 		return rt, err
 	}
 
-	// 7. DNS layer and router. Foreign upstream queries go through the
+	// 8. DNS layer and router. Foreign upstream queries go through the
 	// SOCKS5 endpoint so plaintext DNS never leaves the machine directly;
 	// domestic queries escape the TUN via the fwmark (set in NewResolver).
 	mapping := dns.NewMapping(time.Duration(cfg.DNS.CacheTTL)*time.Second, time.Hour)
@@ -203,7 +234,7 @@ func boot(cfg *config.Config) (*Runtime, error) {
 	dd := &proxy.DirectDialer{}
 	r := router.New(engine, mapping, pd, dd, serverIPs...)
 
-	// 8. gvisor userspace stack bridging the TUN into the router.
+	// 9. gvisor userspace stack bridging the TUN into the router.
 	st, err := tun.NewStack(rt.dev, router.NewFlowAdapter(r, dnsSrv))
 	if err != nil {
 		return rt, err
@@ -229,6 +260,8 @@ func Stop() error {
 		// Sweep leftovers from a crashed previous run (idempotent).
 		hijackState, _ := hijackStatePath()
 		network.TeardownDNSHijack(hijackState) //nolint:errcheck // best-effort sweep
+		estState, _ := establishedStatePath()
+		network.TeardownEstablishedExempt(estState) //nolint:errcheck // best-effort sweep
 		nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
 		err := nm.Teardown()
 		network.DeleteLink(defaultTunName()) //nolint:errcheck // may not exist
@@ -263,6 +296,10 @@ func Stop() error {
 	hijackState, hsErr := hijackStatePath()
 	if hsErr == nil {
 		network.TeardownDNSHijack(hijackState) //nolint:errcheck // victim cannot clean up itself
+	}
+	estState, esErr := establishedStatePath()
+	if esErr == nil {
+		network.TeardownEstablishedExempt(estState) //nolint:errcheck
 	}
 	nm := network.NewManager(defaultTunName(), proxy.Fwmark, routingTable)
 	_ = nm.Teardown()
@@ -380,6 +417,8 @@ func shutdown(rt *Runtime) {
 	}
 	hijackState, _ := hijackStatePath()
 	network.TeardownDNSHijack(hijackState) //nolint:errcheck // best-effort sweep
+	estState, _ := establishedStatePath()
+	network.TeardownEstablishedExempt(estState) //nolint:errcheck // best-effort sweep
 	if rt.nm != nil {
 		_ = rt.nm.Teardown()
 	} else {
