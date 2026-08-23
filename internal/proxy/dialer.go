@@ -37,6 +37,13 @@ func NewProxyDialer(cfg *config.Config) *ProxyDialer {
 }
 
 func (d *ProxyDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	// The SOCKS5 handshake (TCP connect + greeting + CONNECT reply) has no
+	// internal deadline; bound the whole setup so a wedged sslocal cannot
+	// hang flows forever and fill the 4096-flow budget with phantom dials.
+	// The returned conn is unaffected by cancelling this context.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	var auth *proxy.Auth // no auth on loopback sslocal
 	dialer, err := proxy.SOCKS5("tcp", d.socksAddr, auth, proxy.Direct)
 	if err != nil {
