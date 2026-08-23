@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Icestab/shadowsocks-linux-cli/internal/config"
+	"github.com/Icestab/shadowsocks-linux-cli/internal/logrotate"
 )
 
 // Sslocal manages one sslocal child process in SOCKS5 local mode.
@@ -147,7 +148,9 @@ func (s *Sslocal) Start() error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = nil
 	// 日志落盘（StateDir 由 daemon 保证已创建；失败则静默丢弃）。
+	// 每次启动轮转大日志（sslocal -v 每连接一行，长期运行涨得快）。
 	if logPath := os.Getenv("SSCLI_SSLOCAL_LOG"); logPath != "" {
+		logrotate.MaybeRotate(logPath)
 		if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			cmd.Stderr = lf
 			cmd.Stdout = lf
