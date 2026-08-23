@@ -5,12 +5,14 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -19,11 +21,19 @@ import (
 	"github.com/Icestab/shadowsocks-linux-cli/internal/router"
 )
 
+// hashStateName is the drift-watch record: after the first successfully
+// validated download of a rule file, its SHA-256 is stored next to the
+// files; a later update whose content hash differs triggers a warning
+// (warn-only TOFU — rule lists legitimately change, so refusal would
+// brick updates), surfacing a hijacked or silently-tampered feed once.
+const hashStateName = ".rule-hashes"
+
 // Result reports one list update.
 type Result struct {
 	Name    string
 	OK      bool
 	Skipped bool // no URL configured
+	Warn    string // non-fatal notice (e.g. content-hash drift)
 	Err     error
 }
 
@@ -87,6 +97,8 @@ func (c *Client) UpdateAll(ctx context.Context, cfg *config.Config, out io.Write
 		switch {
 		case r.Skipped:
 			fmt.Fprintf(out, "%-14s SKIPPED (no URL configured)\n", r.Name)
+		case r.OK && r.Warn != "":
+			fmt.Fprintf(out, "%-14s OK (warning: %s)\n", r.Name, r.Warn)
 		case r.OK:
 			fmt.Fprintf(out, "%-14s OK\n", r.Name)
 		default:
@@ -109,6 +121,19 @@ func (c *Client) updateOne(ctx context.Context, url, dest string) Result {
 	if err := validate(name, data); err != nil {
 		return Result{Name: name, Err: fmt.Errorf("validation failed: %w", err)}
 	}
+	// Drift watch (warn-only TOFU): rule lists are mutable subscriptions —
+	// legitimate updates change content constantly, so strict TOFU would
+	// brick every future update. Instead we track the last-accepted hash
+	// and WARN the first time it changes, surfacing a possibly-tampered
+	// feed without blocking legitimate rotation. The stored hash is
+	// refreshed after the warning so it fires once per change.
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	hashPath := filepath.Join(filepath.Dir(dest), hashStateName)
+	hashes := loadHashes(hashPath)
+	var warn string
+	if prev, ok := hashes[name]; ok && prev != hash {
+		warn = fmt.Sprintf("content hash changed since the last accepted update (%s -> %s); if this is unexpected, check the feed URL for tampering", prev, hash)
+	}
 	// Atomic replace: write temp file in the same directory then rename.
 	tmp, err := os.CreateTemp(filepath.Dir(dest), ".rule-*")
 	if err != nil {
@@ -128,7 +153,40 @@ func (c *Client) updateOne(ctx context.Context, url, dest string) Result {
 		os.Remove(tmpPath)
 		return Result{Name: name, Err: err}
 	}
-	return Result{Name: name, OK: true}
+	if err := saveHashes(hashPath, hashes, name, hash); err != nil {
+		return Result{Name: name, Err: err}
+	}
+	return Result{Name: name, OK: true, Warn: warn}
+}
+
+// loadHashes reads "name sha256" lines from the state file at path.
+func loadHashes(path string) map[string]string {
+	out := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		f := strings.Fields(l)
+		if len(f) == 2 {
+			out[f[0]] = f[1]
+		}
+	}
+	return out
+}
+
+// saveHashes records (name, hash) and rewrites the state file with mode
+// 0600 (it sits next to rule files in a root-owned directory).
+func saveHashes(path string, hashes map[string]string, name, hash string) error {
+	hashes[name] = hash
+	var b strings.Builder
+	for n, h := range hashes {
+		b.WriteString(n)
+		b.WriteByte(' ')
+		b.WriteString(h)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 func (c *Client) fetch(ctx context.Context, url string) ([]byte, error) {
