@@ -163,13 +163,17 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 		undo: []string{"route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)},
 		desc: "tun default route",
 	})
-	// 4b. IPv6 default into the TUN as well. The lookup rules are installed
-	// for both families, but without a v6 default in our table the v6
-	// lookup fails and falls back to the MAIN table: on any machine with
-	// global IPv6, foreign v6 traffic would egress directly, silently
-	// bypassing the proxy (a leak). Skipped when the kernel has no IPv6 at
-	// all (then no v6 traffic can exist to leak).
-	if ipv6Available() {
+	// 4b. IPv6 default into the TUN — but ONLY when the host actually has a
+	// global IPv6 address. The lookup rules are installed for both families,
+	// and without a v6 default in our table a v6 lookup falls back to MAIN;
+	// on hosts WITH global IPv6 that would let foreign v6 egress directly
+	// (leak). On hosts with only link-local v6 (the common case), installing
+	// the route is actively harmful: AAAA-driven v6 attempts would reach the
+	// stack (the spoofed handshake succeeds), the app commits to IPv6, and
+	// the v6 relay then often fails (e.g. the VPS has no IPv6), killing
+	// connections mid-TLS that would otherwise have fallen back to IPv4
+	// instantly at connect().
+	if hostHasGlobalIPv6() {
 		args := []string{"-6", "route", "add", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)}
 		undo := []string{"-6", "route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)}
 		if err := runOK(args...); err != nil {
@@ -181,11 +185,33 @@ func (m *Manager) Setup(serverIP netip.Addr) error {
 	return nil
 }
 
-// ipv6Available probes whether the kernel has IPv6 enabled at all (the
-// `ip -6` machinery fails with "Operation not supported" when the IPv6
-// module is absent).
-func ipv6Available() bool {
-	return exec.Command("ip", "-6", "addr", "show").Run() == nil
+// hostHasGlobalIPv6 reports whether any interface carries a global IPv6
+// address; only then can v6 traffic exist that could leak past the TUN.
+func hostHasGlobalIPv6() bool {
+	out, err := exec.Command("ip", "-6", "addr", "show").Output()
+	if err != nil {
+		return false
+	}
+	return outputHasGlobalIPv6(string(out))
+}
+
+// outputHasGlobalIPv6 is the pure predicate behind hostHasGlobalIPv6,
+// parseable in unit tests. ULA (fd00::/8) is excluded: it has local
+// semantics and is already covered by the fc00::/7 -> main private rule,
+// so it neither leaks nor needs TUN capture.
+func outputHasGlobalIPv6(out string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 2 || f[0] != "inet6" || !strings.Contains(l, "scope global") {
+			continue
+		}
+		addr := strings.SplitN(f[1], "/", 2)[0]
+		if strings.HasPrefix(addr, "fd") { // ULA
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func privateRulePriority(cidr string) string {
@@ -254,11 +280,10 @@ func (m *Manager) Teardown() error {
 		record(run(append(fam, "rule", "del", "to", cidr, "lookup", "main",
 			"priority", privateRulePriority(cidr))...))
 	}
-	// v4 默认路由清扫（v6 由 Rollback 记录回滚；无 v6 内核时 ip -6 报错属于正常，含在 best-effort 内）。
+	// v4/v6 默认路由清扫（无条件尝试 v6：主机可能在本次会话中失去 v6，
+// 已装的 v6 路由必须能删掉；无 v6 内核时 ip -6 报错属正常，best-effort）。
 	record(run("route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
-	if ipv6Available() {
-		record(run("-6", "route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
-	}
+	record(run("-6", "route", "del", "default", "dev", m.TUNName, "table", fmt.Sprint(m.Table)))
 	return firstErr
 }
 
