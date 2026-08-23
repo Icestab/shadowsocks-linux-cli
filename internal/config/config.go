@@ -164,6 +164,21 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("rules[%d]: exactly one of domain/domain_suffix/ip/cidr must be set", i)
 		}
 	}
+	// The local SOCKS5 endpoint must stay loopback-only: binding it
+	// anywhere else turns this box into an unauthenticated open proxy on
+	// the LAN (any neighbour can relay through the VPS). Defaults() fills
+	// 127.0.0.1:1080 when empty, so this catches explicit misconfig.
+	if c.Sslocal.SocksAddr != "" {
+		host, _, err := net.SplitHostPort(c.Sslocal.SocksAddr)
+		if err != nil {
+			return fmt.Errorf("sslocal.socks_addr %q: %w", c.Sslocal.SocksAddr, err)
+		}
+		switch host {
+		case "localhost", "127.0.0.1", "::1":
+		default:
+			return fmt.Errorf("sslocal.socks_addr %q must be a loopback address; a non-loopback SOCKS5 listener is an unauthenticated open proxy", c.Sslocal.SocksAddr)
+		}
+	}
 	return nil
 }
 

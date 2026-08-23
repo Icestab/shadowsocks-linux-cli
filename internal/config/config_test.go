@@ -91,6 +91,27 @@ func TestRuleValidation(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNonLoopbackSocksAddr(t *testing.T) {
+	base := &Config{
+		Mode:   ModeGFW,
+		Server: Server{Address: "a", Port: 1, Method: "aes-256-gcm", Password: "p"},
+	}
+	for _, addr := range []string{"", "127.0.0.1:1080", "[::1]:1080", "localhost:1080"} {
+		c := *base
+		c.Sslocal.SocksAddr = addr
+		if err := c.Validate(); err != nil {
+			t.Errorf("socks_addr %q must validate: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{"0.0.0.0:1080", "192.168.1.5:1080", ":1080"} {
+		c := *base
+		c.Sslocal.SocksAddr = addr
+		if err := c.Validate(); err == nil {
+			t.Errorf("socks_addr %q must be rejected (open proxy on LAN)", addr)
+		}
+	}
+}
+
 func TestModeSwitchPreservesOtherKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
