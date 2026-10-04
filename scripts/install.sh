@@ -62,7 +62,7 @@ elif [ -x "$CACHED" ]; then
     SSLOCAL_SRC="$CACHED"
 else
     # 固定版本号（可用 SS_TAG=xxx 覆盖），避免 latest 指向未知构建。
-    SS_TAG=${SS_TAG:-v1.24.0}
+    SS_TAG=${SS_TAG:-v1.25.0}
     URL="https://github.com/shadowsocks/shadowsocks-rust/releases/download/${SS_TAG}/shadowsocks-${SS_TAG}.${SS_ARCH}-unknown-linux-musl.tar.xz"
     SHA_URL="${URL}.sha256"
     echo "    从 GitHub 下载: $URL"

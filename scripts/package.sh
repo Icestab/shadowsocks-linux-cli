@@ -20,7 +20,7 @@ set -euo pipefail
 VERSION=${1:?用法: package.sh <版本号> [x86_64|aarch64]}
 GOARCH_IN=${2:-$(uname -m)}
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SS_TAG=${SS_TAG:-v1.24.0}
+SS_TAG=${SS_TAG:-v1.25.0}
 
 case "$GOARCH_IN" in
     x86_64|amd64) GOARCH=amd64;  PKG_ARCH=x86_64; SS_ARCH="x86_64" ;;
